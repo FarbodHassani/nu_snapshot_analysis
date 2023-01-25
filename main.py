@@ -1,3 +1,5 @@
+import sys
+sys.path.append('/mn/stornext/u3/hassanif/projects/Neutrino_Niayesh/Analysis/nu_code/')
 import library_snapshot
 from library_snapshot import system_tools as tools
 from library_snapshot import sim_analysis as analysis
@@ -10,7 +12,7 @@ import os
 
 ########################
 # Parsing the settings
-########################
+# #######################
 parameters = parse.parse_parameter_file('./settings.ini')
 number_smaples_ini = parameters['number_samples']
 sim_size_ini = parameters['simulation']
@@ -20,68 +22,68 @@ snap_num_ini = parameters['snapshot_number']
 sim_type_ini = parameters['sim_type']
 mass_limit = parameters['mass_limit']
 data_load = tools.nested_dict(5, list)
-ngrid_ini = range(1,5,2)
 save_path = parameters['save_path']
+sim_path =parameters['sim_path']
+ngrid_ini = range(1,40,2)
+remove_subhalos = parameters['remove_subhalos']
 
-######################
-## Loop over sub-boxes
-######################
-for number_smaples in number_smaples_ini:  
-    print("\033[34m \033[1m \n \n  ********* Analyzing sub-box count: {}".format(number_smaples)+" ********* \033[0m")
-
-    for sim_size in sim_size_ini: 
-        obj = analysis.sim(boxsize)
-        for bulk_species in bulk_species_ini: 
+for sim_size in sim_size_ini: 
+    obj = analysis.sim(boxsize)
+    for bulk_species in bulk_species_ini: 
+        for sim in sim_type_ini:
             for snap_num in snap_num_ini: 
-                for sim in sim_type_ini:
-                    ######################
-                    ## particles read
-                    ######################
-                    if bulk_species=='cdm':
-                        snapshot = './../simulations///'+sim_size+'/'+sim+'/output/snap00'+str(snap_num)+'_cdm'
-                        #[1](CDM), [2](neutrinos) or [1,2](CDM+neutrinos)
-                        ptype = [1]
-                        cdm_pcl = obj.gadget_load(snapshot,ptype) # pos = arr[0], vel = arr[1];
-                        data_load[sim_size][sim][bulk_species]['pos'] = cdm_pcl[0]; 
-                        data_load[sim_size][sim][bulk_species]['vel'] = cdm_pcl[1];
-                    ######################
-                    ### Neutrinos read:
-                    ######################
-                    elif bulk_species=='nu':
-                        print(" \t  Analyzing bulk species: {}".format(bulk_species))
-                        print(" \t  Analyzing snapshot number: {}".format(snap_num))
-                        print(" \t  Analyzing simulation: {}".format(sim))
-                        print(" \t  bulk chosen to : {}".format(bulk_species))                        
-                        ptype=[1];
-                        snapshot = './../simulations//'+sim_size+'//'+sim+'/output/snap00'+str(snap_num)+'_ncdm0'
-                        nu_pcl = obj.gadget_load(snapshot,ptype) # pos = arr[0], vel = arr[1];
-                        data_load[sim_size][sim][bulk_species]['pos'] = nu_pcl[0]; 
-                        data_load[sim_size][sim][bulk_species]['vel'] = nu_pcl[1];
-                    ######################
-                    ## halo read
-                    ######################
-                    halo_address ='./../simulations/'+sim_size+'/'+sim+'/output/halos/out_'+str(snap_num)+'.list'
-                    #pop 1
-                    halo_p1 = obj.halo_selection(halo_address, '+', mass_limit);
-                    data_load[sim_size][sim]['halo_p1']['pos'] = halo_p1[:,:3]
-                    data_load[sim_size][sim]['halo_p1']['vel'] = halo_p1[:,3:6]
-                    #pop 2
-                    halo_p2 = obj.halo_selection(halo_address, '-', mass_limit)
-                    data_load[sim_size][sim]['halo_p2']['pos'] = halo_p2[:,:3]
-                    data_load[sim_size][sim]['halo_p2']['vel'] = halo_p2[:,3:6]            
-                    #pop all
-                    halo_all = obj.halo_selection(halo_address, 'all', mass_limit)
-                    data_load[sim_size][sim]['halo']['pos'] = halo_all[:,:3]
-                    data_load[sim_size][sim]['halo']['vel'] = halo_all[:,3:6]
-                    
+                ######################
+                ## particles read
+                ######################
+                if bulk_species=='cdm':
+                    snapshot = sim_path + sim_size+'/'+sim+'/output/snap00'+str(snap_num)+'_cdm'
+                    #[1](CDM), [2](neutrinos) or [1,2](CDM+neutrinos)
+                    ptype = [1]
+                    cdm_pcl = obj.gadget_load(snapshot,ptype) # pos = arr[0], vel = arr[1];
+                    data_load[sim_size][sim][bulk_species]['pos'] = cdm_pcl[0]; 
+                    data_load[sim_size][sim][bulk_species]['vel'] = cdm_pcl[1];
+                ######################
+                ### Neutrinos read:
+                ######################
+                elif bulk_species=='nu':
                     print(" \t  Analyzing bulk species: {}".format(bulk_species))
                     print(" \t  Analyzing snapshot number: {}".format(snap_num))
                     print(" \t  Analyzing simulation: {}".format(sim))
-                    print(" \t  bulk chosen to : {}".format(bulk_species))
-                    print("\033[32m \t  number of  halos: "+str(np.shape(halo_all)[0])+", number of p1: "+str(np.shape(halo_p1)[0])+", number of p2: "+str(np.shape(halo_p2)[0])+" \033[0m")
-                    ##########
-                    ##########
-                    
+                    print(" \t  bulk chosen to : {}".format(bulk_species))                        
+                    ptype=[1];
+                    snapshot =  sim_path +sim_size+'//'+sim+'/output/snap00'+str(snap_num)+'_ncdm0'
+                    nu_pcl = obj.gadget_load(snapshot,ptype) # pos = arr[0], vel = arr[1];
+                    data_load[sim_size][sim][bulk_species]['pos'] = nu_pcl[0]; 
+                    data_load[sim_size][sim][bulk_species]['vel'] = nu_pcl[1];
+                ######################
+                ## halo read
+                ######################
+                if (remove_subhalos == "yes"):
+                    halo_address = sim_path +sim_size+'/'+sim+'/output/halos/out_'+str(snap_num)+'_subhalo.txt'
+                else:
+                    halo_address = sim_path +sim_size+'/'+sim+'/output/halos/out_'+str(snap_num)+'.list'                    
+                #pop 1
+                halo_p1 = obj.halo_selection(halo_address, '+', mass_limit, remove_subhalos);
+                data_load[sim_size][sim]['halo_p1']['pos'] = halo_p1[:,:3]
+                data_load[sim_size][sim]['halo_p1']['vel'] = halo_p1[:,3:6]
+                #pop 2
+                halo_p2 = obj.halo_selection(halo_address, '-', mass_limit, remove_subhalos)
+                data_load[sim_size][sim]['halo_p2']['pos'] = halo_p2[:,:3]
+                data_load[sim_size][sim]['halo_p2']['vel'] = halo_p2[:,3:6]            
+                #pop all
+                halo_all = obj.halo_selection(halo_address, 'all', mass_limit, remove_subhalos)
+                data_load[sim_size][sim]['halo']['pos'] = halo_all[:,:3]
+                data_load[sim_size][sim]['halo']['vel'] = halo_all[:,3:6]
+
+                print(" \t  Analyzing bulk species: {}".format(bulk_species))
+                print(" \t  Analyzing snapshot number: {}".format(snap_num))
+                print(" \t  Analyzing simulation: {}".format(sim))
+                print(" \t  bulk chosen to : {}".format(bulk_species))
+                print("\033[32m \t  number of  halos: "+str(np.shape(halo_all)[0])+", number of p1: "+str(np.shape(halo_p1)[0])+", number of p2: "+str(np.shape(halo_p2)[0])+" \033[0m")
+                ##########
+                ##########
+                for number_smaples in number_smaples_ini:  
+                    print("\033[34m \033[1m \n \n  ********* Analyzing sub-box count:{}".format(number_smaples)+" ********* \033[0m")
                     for ngrid in ngrid_ini: 
                         if(number_smaples>ngrid*ngrid*ngrid):
                             number_smaples_tmp = ngrid*ngrid*ngrid;
@@ -155,7 +157,7 @@ for number_smaples in number_smaples_ini:
                                 df = df.append(data_saved, ignore_index=True)
                         if not os.path.exists(save_path):
                             os.makedirs(save_path)
-                        with open(save_path+'/data_ngrid_'+str(ngrid)+'_sim_'+sim+'_Nsubboxes_'+str(number_smaples_tmp)+'.pickle', 'wb') as handle:
+                        with open(save_path+'/data_ngrid_'+str(ngrid)+'_sim_'+sim_size+'_'+sim+'_snap_'+str(snap_num)+'_Nsubboxes_'+str(number_smaples_tmp)+'.pickle', 'wb') as handle:
                             pickle.dump(df, handle, protocol=pickle.HIGHEST_PROTOCOL)
                         print("\t \t *** number of grid: "+str(ngrid)+" is finished!")
                 print("\033[34m \033[1m  \n \t The main loop is finished \033[0m")

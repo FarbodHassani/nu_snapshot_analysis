@@ -29,6 +29,8 @@ def parse_parameter_file(file_path):
                         # Split the value on ',' and store as a list
                         value = value.split(',')
                         value = [x.strip() for x in value]
+                    else:
+                        value = [value]
                 elif parameter == "simulation":
                     value = [value]        
                 
@@ -37,7 +39,13 @@ def parse_parameter_file(file_path):
                     
                 elif parameter in ["boxsize", "mass_limit"]:
                     value = float(value)
-                
+                    
+                elif parameter == "sim_path":
+                    value = value
+                    
+                elif parameter == "remove_subhalos":
+                    value = value     
+                    
                 elif parameter == "snapshot_number":
                     value = [int(value)]
                     

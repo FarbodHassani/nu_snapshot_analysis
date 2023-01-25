@@ -73,7 +73,7 @@ class sim:
         """
         return (np.average(x),np.std(x));
 
-    def halo_selection(self, data_address, string, mass_limit, extra_columns=False):
+    def halo_selection(self, data_address, string, mass_limit, Remove_subhalo="no",  extra_columns=False):
         """ 
         This function filters a halo catalogue from Rockstar based on a given mass limit and a string indicating whether to select larger or smaller halos.
 Input:
@@ -85,6 +85,8 @@ Output:
 - A new catalogue with [x,y,z,v_x,v_y,v_z] and additional columns of[Rvir,M200b] of halo population if requested
         """
         data = np.loadtxt(data_address);
+        if (Remove_subhalo=='yes'):
+            data = data[data[:,41]==-1]; # Only choose parent halos
         if (string == "+"):
             condition = data[:,20]> mass_limit;
             if extra_columns:
@@ -118,7 +120,6 @@ Output:
             if (extra_columns):
                 halo_pop[:,6] = data[:,5] # R_vir
                 halo_pop[:,7] = data[:,20] # Mass
-
         return halo_pop;
 
     def sum_vel_dot_vbulk(self, vel, velocity_bulk):

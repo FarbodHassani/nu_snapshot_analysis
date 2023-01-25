@@ -1,6 +1,7 @@
 #!/bin/bash
 
-script_name="./python_run_alpha.py"
+module load python
+script_name="./main.py"
 
 # command to run the python script
-python $script_name | unbuffer -p tee info.txt
+python $script_name > info.txt
