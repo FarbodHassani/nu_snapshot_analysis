@@ -24,8 +24,10 @@ mass_limit = parameters['mass_limit']
 data_load = tools.nested_dict(5, list)
 save_path = parameters['save_path']
 sim_path =parameters['sim_path']
-ngrid_ini = range(1,40,2)
-remove_subhalos = parameters['remove_subhalos']
+ngrid_min =parameters['ngrid_min']
+ngrid_max = parameters['ngrid_max']
+ngrid_step = parameters['ngrid_step']
+ngrid_ini = range(ngrid_min,ngrid_max,ngrid_step)
 
 for sim_size in sim_size_ini: 
     obj = analysis.sim(boxsize)
@@ -58,20 +60,17 @@ for sim_size in sim_size_ini:
                 ######################
                 ## halo read
                 ######################
-                if (remove_subhalos == "yes"):
-                    halo_address = sim_path +sim_size+'/'+sim+'/output/halos/out_'+str(snap_num)+'_subhalo.txt'
-                else:
-                    halo_address = sim_path +sim_size+'/'+sim+'/output/halos/out_'+str(snap_num)+'.list'                    
+                halo_address = sim_path +sim_size+'/'+sim+'/output/halos/out_'+str(snap_num)+'.list'
                 #pop 1
-                halo_p1 = obj.halo_selection(halo_address, '+', mass_limit, remove_subhalos);
+                halo_p1 = obj.halo_selection(halo_address, '+', mass_limit);
                 data_load[sim_size][sim]['halo_p1']['pos'] = halo_p1[:,:3]
                 data_load[sim_size][sim]['halo_p1']['vel'] = halo_p1[:,3:6]
                 #pop 2
-                halo_p2 = obj.halo_selection(halo_address, '-', mass_limit, remove_subhalos)
+                halo_p2 = obj.halo_selection(halo_address, '-', mass_limit)
                 data_load[sim_size][sim]['halo_p2']['pos'] = halo_p2[:,:3]
                 data_load[sim_size][sim]['halo_p2']['vel'] = halo_p2[:,3:6]            
                 #pop all
-                halo_all = obj.halo_selection(halo_address, 'all', mass_limit, remove_subhalos)
+                halo_all = obj.halo_selection(halo_address, 'all', mass_limit)
                 data_load[sim_size][sim]['halo']['pos'] = halo_all[:,:3]
                 data_load[sim_size][sim]['halo']['vel'] = halo_all[:,3:6]
 
@@ -92,7 +91,7 @@ for sim_size in sim_size_ini:
                             number_smaples_tmp = number_smaples;
                         sub_box_lists = obj.Random_sub_box(ngrid,number_smaples_tmp);
                         ## Reseting the dictionary!
-                        column_names = ['simulation','n_grid', 'sub_box_index','bulk_vel_halos_i', 'bulk_vel_cdm_i', 'vp1.v_b(cdm)', 'vp2.v_b(cdm)', 'vp1.v_b(halos)', 'vp2.v_b(halos)', 'v_h.v_b(cdm)','v_h.v_b(halos)']
+                        column_names = ['simulation','parameters','n_grid', 'sub_box_index','bulk_vel_halos_i', 'bulk_vel_cdm_i', 'vp1.v_b(cdm)', 'vp2.v_b(cdm)', 'vp1.v_b(halos)', 'vp2.v_b(halos)', 'v_h.v_b(cdm)','v_h.v_b(halos)']
                         df = pd.DataFrame(columns=column_names)
                         for i in range(number_smaples_tmp):
                             sub_box_index = sub_box_lists[i]
@@ -143,7 +142,8 @@ for sim_size in sim_size_ini:
 
                                 data_saved = {
                                     'simulation':sim,
-                                    'ngrid': ngrid,
+                                    'parameters':parameters,
+                                    'n_grid': ngrid,
                                     'sub_box_index': sub_box_index,
                                     'bulk_vel_halos_i': bulk_vel_halos_i,
                                     'bulk_vel_cdm_i': bulk_vel_cdm_i,

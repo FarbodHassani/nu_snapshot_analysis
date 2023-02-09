@@ -89,18 +89,18 @@ Output:
             data = data[data[:,41]==-1]; # Only choose parent halos
         if (string == "+"):
             condition = data[:,20]> mass_limit;
-            if extra_columns:
+            if extra_columns == True:
                 halo_pop = np.zeros((np.shape(data[condition])[0],8))
             else:
                 halo_pop = np.zeros((np.shape(data[condition])[0],6))
             for i in range(6):
                 halo_pop[:,i] = data[condition][:,8+i]
-            if (extra_columns):
+            if extra_columns == True:
                 halo_pop[:,6] = data[condition][:,5] # R_vir
                 halo_pop[:,7] = data[condition][:,20] # Mass
         elif (string == "-"):
             condition = data[:,20]<= mass_limit;
-            if extra_columns:
+            if extra_columns == True:
                 halo_pop = np.zeros((np.shape(data[condition])[0],8))
             else:
                 halo_pop = np.zeros((np.shape(data[condition])[0],6))
@@ -111,7 +111,7 @@ Output:
                 halo_pop[:,7] = data[condition][:,20] # Mass
  
         elif (string == "all"):
-            if extra_columns:
+            if extra_columns == True:
                 halo_pop = np.zeros((np.shape(data)[0],8))
             else:
                 halo_pop = np.zeros((np.shape(data)[0],6))
@@ -121,6 +121,47 @@ Output:
                 halo_pop[:,6] = data[:,5] # R_vir
                 halo_pop[:,7] = data[:,20] # Mass
         return halo_pop;
+
+    
+#     def alpha_list(self, vel, velocity_bulk):
+#         """
+#          Given two 3D arrays vel and velocity_bulk, this function computes the correlation coefficent of each vector in vel with the velocity_bulk vector. 
+#     Returns the average, standard deviation, and number of vectors in vel that have been used for calculation.
+    
+#     Parameters:
+#         vel (3D array): an array of 3D vectors representing the velocities of halos/particles
+#         velocity_bulk (3D array): a 3D vector representing the bulk velocity of a given sub-box
+        
+#     Returns:
+#         A list of correlation coefficents!
+#         """
+#         tmp = np.zeros((np.shape(vel)[0]))
+#         for i in range(np.shape(vel)[0]):
+#             tmp[i] = np.dot(vel[i], velocity_bulk)/(np.linalg.norm(vel[i]))/(np.linalg.norm(velocity_bulk))
+#         # avg =  np.mean(tmp)
+#         # std = np.std(tmp);
+        
+#         return tmp # returns sum of all dot product and number of halos in that cell
+
+#     def sum_alpha(self, vel, velocity_bulk):
+#         """
+#          Given two 3D arrays vel and velocity_bulk, this function computes the correlation coefficent of each vector in vel with the velocity_bulk vector and returns all the computed alphas!
+#     Returns the average, standard deviation, and number of vectors in vel that have been used for calculation.
+    
+#     Parameters:
+#         vel (3D array): an array of 3D vectors representing the velocities of halos/particles
+#         velocity_bulk (3D array): a 3D vector representing the bulk velocity of a given sub-box
+        
+#     Returns:
+#         A list of the form [average, standard deviation, number of vectors in vel]
+#         """
+#         tmp = np.zeros((np.shape(vel)[0]))
+#         for i in range(np.shape(vel)[0]):
+#             tmp[i] = np.dot(vel[i], velocity_bulk)/(np.linalg.norm(vel[i]))/(np.linalg.norm(velocity_bulk))
+#         avg =  np.mean(tmp)
+#         std = np.std(tmp);
+        
+#         return [avg, std, np.shape(vel)[0]] # returns sum of all dot product and number of halos in that cell
 
     def sum_vel_dot_vbulk(self, vel, velocity_bulk):
         """
@@ -159,6 +200,27 @@ Output:
         vel_halos =vel[condition_tot];
         # pos_halos =pos[condition_tot]# For test you can output pos[vel_halos, pos_halos];
         return vel_halos
+    
+    def pos_in_cell(self, ngrid, pos, vel, sub_box_index):
+        boxsize = self.boxsize;
+        """
+        Given positions, velocities, and a sub-box index, this function returns the velocities of halos that are located in the specified sub-box.
+
+            Parameters:
+                ngrid (int): number of grids in the simulation
+                pos (3D array): an array of 3D vectors representing the positions of halos
+                vel (3D array): an array of 3D vectors representing the velocities of halos
+                sub_box_index (list): a list of 3 integers representing the index of the sub-box (x, y, z)
+            Returns:
+                A 3D array containing the positions of halos in the specified sub-box
+        """
+        condition_x = (np.floor(pos[:,0]*ngrid/boxsize)== sub_box_index[0])
+        condition_y = (np.floor(pos[:,1]*ngrid/boxsize)== sub_box_index[1])
+        condition_z = (np.floor(pos[:,2]*ngrid/boxsize)== sub_box_index[2])
+        condition_tot = (condition_x) & (condition_y) & (condition_z)
+        # vel_halos =vel[condition_tot];
+        pos_halos =pos[condition_tot]# For test you can output pos[vel_halos, pos_halos];
+        return pos_halos
 
     def velocity_bulk(self, ngrid, pos,vel, sub_box_index):
         boxsize = self.boxsize;
