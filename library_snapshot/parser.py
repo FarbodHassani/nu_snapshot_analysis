@@ -55,6 +55,9 @@ def parse_parameter_file(file_path):
                     
                 elif parameter == "save_path":
                     value = value
+                
+                elif parameter == "halo_file":
+                    value = value    
                     
                 else:
                     value = [value]  

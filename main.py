@@ -1,5 +1,5 @@
 import sys
-sys.path.append('/mn/stornext/u3/hassanif/projects/Neutrino_Niayesh/Analysis/nu_code/')
+sys.path.append('/mn/stornext/u3/hassanif/neutrino_niayesh/Analysis/nu_code/')
 import library_snapshot
 from library_snapshot import system_tools as tools
 from library_snapshot import sim_analysis as analysis
@@ -27,6 +27,8 @@ sim_path =parameters['sim_path']
 ngrid_min =parameters['ngrid_min']
 ngrid_max = parameters['ngrid_max']
 ngrid_step = parameters['ngrid_step']
+halo_file = parameters['halo_file']
+
 ngrid_ini = range(ngrid_min,ngrid_max,ngrid_step)
 
 for sim_size in sim_size_ini: 
@@ -57,10 +59,18 @@ for sim_size in sim_size_ini:
                     nu_pcl = obj.gadget_load(snapshot,ptype) # pos = arr[0], vel = arr[1];
                     data_load[sim_size][sim][bulk_species]['pos'] = nu_pcl[0]; 
                     data_load[sim_size][sim][bulk_species]['vel'] = nu_pcl[1];
+                elif bulk_species=='halo':
+                    print(" \t  Analyzing bulk species: {}".format(bulk_species))
+                    print(" \t  Analyzing snapshot number: {}".format(snap_num))
+                    print(" \t  Analyzing simulation: {}".format(sim))
+                    print(" \t  bulk chosen to : {}".format(bulk_species))                        
+                    # 
+                    
+                
                 ######################
                 ## halo read
                 ######################
-                halo_address = sim_path +sim_size+'/'+sim+'/output/halos/out_'+str(snap_num)+'.list'
+                halo_address = halo_file
                 #pop 1
                 halo_p1 = obj.halo_selection(halo_address, '+', mass_limit);
                 data_load[sim_size][sim]['halo_p1']['pos'] = halo_p1[:,:3]
@@ -91,14 +101,14 @@ for sim_size in sim_size_ini:
                             number_smaples_tmp = number_smaples;
                         sub_box_lists = obj.Random_sub_box(ngrid,number_smaples_tmp);
                         ## Reseting the dictionary!
-                        column_names = ['simulation','parameters','n_grid', 'sub_box_index','bulk_vel_halos_i', 'bulk_vel_cdm_i', 'vp1.v_b(cdm)', 'vp2.v_b(cdm)', 'vp1.v_b(halos)', 'vp2.v_b(halos)', 'v_h.v_b(cdm)','v_h.v_b(halos)']
+                        column_names = ['simulation','parameters','bulk_species','n_grid', 'sub_box_index','bulk_vel_halos_i', 'bulk_vel_i', 'vp1.v_b', 'vp2.v_b', 'vp1.v_b(halos)', 'vp2.v_b(halos)', 'v_h.v_b','v_h.v_b(halos)']
                         df = pd.DataFrame(columns=column_names)
                         for i in range(number_smaples_tmp):
                             sub_box_index = sub_box_lists[i]
                             ##############################
                             ##### pcl velocities in each cell
                             ##############################
-                            bulk_species = 'cdm'
+                            # bulk_species = 'cdm'
                             pos_cdm = data_load[sim_size][sim][bulk_species]['pos']
                             vel_cdm = data_load[sim_size][sim][bulk_species]['vel']
                             cdm_vels = obj.vels_in_cell(ngrid, pos_cdm, vel_cdm, sub_box_index)# Gives the velocities of objects in a cell defined by sub-box index!
@@ -143,15 +153,16 @@ for sim_size in sim_size_ini:
                                 data_saved = {
                                     'simulation':sim,
                                     'parameters':parameters,
+                                    'bulk_species':bulk_species,
                                     'n_grid': ngrid,
                                     'sub_box_index': sub_box_index,
                                     'bulk_vel_halos_i': bulk_vel_halos_i,
-                                    'bulk_vel_cdm_i': bulk_vel_cdm_i,
-                                    'vp1.v_b(cdm)':vdvb_p1_bulk_cdm ,
-                                    'vp2.v_b(cdm)':vdvb_p2_bulk_cdm ,
+                                    'bulk_vel_i': bulk_vel_cdm_i,
+                                    'vp1.v_b':vdvb_p1_bulk_cdm ,
+                                    'vp2.v_b':vdvb_p2_bulk_cdm ,
                                     'vp1.v_b(halos)':vdvb_p1_bulk_halos ,
                                     'vp2.v_b(halos)':vdvb_p2_bulk_halos ,
-                                    'v_h.v_b(cdm)':vdvb_all_bulk_cdm ,
+                                    'v_h.v_b':vdvb_all_bulk_cdm ,
                                     'v_h.v_b(halos)':vdvb_all_bulk_halos 
                                     }
                                 df = df.append(data_saved, ignore_index=True)

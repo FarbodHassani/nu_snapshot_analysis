@@ -49,8 +49,15 @@ def parse_parameter_file(file_path):
                 elif parameter == "snapshot_number":
                     value = [int(value)]
                     
+                    
+                elif parameter in ["ngrid_min", "ngrid_max", "ngrid_step"]:
+                    value = int(value)
+                    
                 elif parameter == "save_path":
                     value = value
+                
+                elif parameter == "halo_file":
+                    value = value    
                     
                 else:
                     value = [value]  

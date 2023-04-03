@@ -13,6 +13,8 @@ from mpi4py import MPI
 import random
 import pandas as pd
 import pickle
+from statistics import median
+
 
 #
 
@@ -85,10 +87,11 @@ Output:
 - A new catalogue with [x,y,z,v_x,v_y,v_z] and additional columns of[Rvir,M200b] of halo population if requested
         """
         data = np.loadtxt(data_address);
+        
         if (Remove_subhalo=='yes'):
             data = data[data[:,41]==-1]; # Only choose parent halos
         if (string == "+"):
-            condition = data[:,20]> mass_limit;
+            condition = data[:,20]> mass_limit; # M200b
             if extra_columns == True:
                 halo_pop = np.zeros((np.shape(data[condition])[0],8))
             else:
@@ -97,7 +100,7 @@ Output:
                 halo_pop[:,i] = data[condition][:,8+i]
             if extra_columns == True:
                 halo_pop[:,6] = data[condition][:,5] # R_vir
-                halo_pop[:,7] = data[condition][:,20] # Mass
+                halo_pop[:,7] = data[condition][:,20] # Mass 200b
         elif (string == "-"):
             condition = data[:,20]<= mass_limit;
             if extra_columns == True:
@@ -122,7 +125,7 @@ Output:
                 halo_pop[:,7] = data[:,20] # Mass
         return halo_pop;
 
-    
+
 #     def alpha_list(self, vel, velocity_bulk):
 #         """
 #          Given two 3D arrays vel and velocity_bulk, this function computes the correlation coefficent of each vector in vel with the velocity_bulk vector. 

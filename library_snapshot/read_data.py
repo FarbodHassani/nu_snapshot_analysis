@@ -4,7 +4,7 @@ import pandas as pd
 import pickle
 import numpy as np
 
-def process_directory(input_dir, output_dir, v_bulk_kind="cdm"):
+def process_directory(input_dir, output_dir, v_bulk_kind="halo"):
     """
     This function takes in two inputs, the input_dir and output_dir. It goes through the files in the input_dir directory,
     reads their contents, performs some computation on the contents, and saves the results to the output_dir directory.
@@ -14,7 +14,9 @@ def process_directory(input_dir, output_dir, v_bulk_kind="cdm"):
     - output_dir (str): The directory to save the results to.
     - v_bulk_kind (str): The kind from which the bulk velocity is computed
     """
-    column_names = ['simulation','sim_info', 'snapshot_num','ngrid', 'dx','number_samples', 'alpha_p1', 'alpha_p2', 'std_alpha_p1', 'std_alpha_p2', 'num_subbox_analysed', "v_bulk_kind"]
+
+    column_names = ['simulation','sim_info', 'snapshot_num','ngrid', 'dx','number_samples', 'alpha_p1', 'alpha_p2', 'std_alpha_p1', 'std_alpha_p2', 'num_subbox_analysed', '<vb.vb>', '<vb.vp1>', '<vb.vp2>', "v_bulk_kind"]
+    
     data_alpha = pd.DataFrame(columns=column_names)
     for root, dirs, files in os.walk(input_dir):
         for file in files:
@@ -25,7 +27,10 @@ def process_directory(input_dir, output_dir, v_bulk_kind="cdm"):
                 L_match = re.search(r"L_(\d+)", file)
                 boxsize = int(L_match.group(1))
                 
-                N_match = re.search(r"N_(\d+)", file)
+                # N_match = re.search(r"N_(\d+)", file)
+                # N_grid_sim = int(N_match.group(1))
+
+                N_match = re.search(r"Ngrid_(\d+)", file)
                 N_grid_sim = int(N_match.group(1))
                 
                 snap_match = re.search(r"snap_(\d+)", file)
@@ -39,21 +44,21 @@ def process_directory(input_dir, output_dir, v_bulk_kind="cdm"):
                 
                 df = pickle.load(handle)
                 if (v_bulk_kind== "cdm"):
-                    if not df['bulk_vel_cdm_i'].empty:
-                        vb = np.array([np.array(x) for x in df['bulk_vel_cdm_i']])
+                    if not df['bulk_vel_i'].empty:
+                        vb = np.array([np.array(x) for x in df['bulk_vel_i']])
                         vb = vb[:,0,:]# The zeroth component picks the velocities the first component is the error!
                         vb_dot_vb = np.einsum('ij,ij->i', vb, vb) # dot product of v_bulk vectors with itself
                         avg_vb_dot_vb = np.average(vb_dot_vb) # since there are many particles the weights for vb_dot_vb are more or less close to 1
                         std_vb_dot_vb = np.sqrt(np.average((vb_dot_vb - np.average(vb_dot_vb))**2))
                         #### population 1
-                        weight = np.array([np.array(x) for x in df['vp1.v_b(cdm)']])[:,2] # number of halos in each sub-box
-                        vector_vp1_dot_vb = np.array([np.array(x) for x in df['vp1.v_b(cdm)']])[:,0]
+                        weight = np.array([np.array(x) for x in df['vp1.v_b']])[:,2] # number of halos in each sub-box
+                        vector_vp1_dot_vb = np.array([np.array(x) for x in df['vp1.v_b']])[:,0]
                         avg_vp1_dot_vb = np.average(vector_vp1_dot_vb, weights=weight, axis=0)
                         std_vp1_dot_vb=  np.average((vector_vp1_dot_vb - np.average(vector_vp1_dot_vb, weights=weight))**2, weights=weight) # This computes the standard deviation considering the weights!
 
                         #### population 2
-                        weight = np.array([np.array(x) for x in df['vp2.v_b(cdm)']])[:,2] # number of halos in each sub-box
-                        vector_vp2_dot_vb = np.array([np.array(x) for x in df['vp2.v_b(cdm)']])[:,0]
+                        weight = np.array([np.array(x) for x in df['vp2.v_b']])[:,2] # number of halos in each sub-box
+                        vector_vp2_dot_vb = np.array([np.array(x) for x in df['vp2.v_b']])[:,0]
                         avg_vp2_dot_vb = np.average(vector_vp2_dot_vb, weights=weight, axis=0)
                         std_vp2_dot_vb=  np.average((vector_vp2_dot_vb - np.average(vector_vp2_dot_vb, weights=weight))**2, weights=weight) # This computes the standard deviation considering the weights!
 
@@ -84,6 +89,9 @@ def process_directory(input_dir, output_dir, v_bulk_kind="cdm"):
                                 'std_alpha_p1':std_alpha_p1,
                                 'std_alpha_p2':std_alpha_p2,
                                 'num_subbox_analysed':np.shape(vb)[0],
+                                '<vb.vb>':avg_vb_dot_vb,
+                                '<vb.vp1>':avg_vp1_dot_vb,
+                                '<vb.vp2>':avg_vp2_dot_vb,
                                 'v_bulk_kind':v_bulk_kind
                                 }
                         data_alpha = data_alpha.append(data_saved, ignore_index=True)
@@ -91,7 +99,7 @@ def process_directory(input_dir, output_dir, v_bulk_kind="cdm"):
                         
                 elif (v_bulk_kind== "halo"):
                     if not df['bulk_vel_halos_i'].empty:
-                        vb = np.array([np.array(x) for x in df['bulk_vel_cdm_i']])
+                        vb = np.array([np.array(x) for x in df['bulk_vel_i']])
                         vb = vb[:,0,:]# The zeroth component picks the velocities the first component is the error!
                         vb_dot_vb = np.einsum('ij,ij->i', vb, vb) # dot product of v_bulk vectors with itself
                         avg_vb_dot_vb = np.average(vb_dot_vb) # since there are many particles the weights for vb_dot_vb are more or less close to 1
@@ -135,8 +143,12 @@ def process_directory(input_dir, output_dir, v_bulk_kind="cdm"):
                                 'std_alpha_p1':std_alpha_p1,
                                 'std_alpha_p2':std_alpha_p2,
                                 'num_subbox_analysed':np.shape(vb)[0],
+                                '<vb.vb>':avg_vb_dot_vb,
+                                '<vb.vp1>':avg_vp1_dot_vb,
+                                '<vb.vp2>':avg_vp2_dot_vb,
                                 'v_bulk_kind':v_bulk_kind
                                 }
+
                         data_alpha = data_alpha.append(data_saved, ignore_index=True)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
