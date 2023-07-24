@@ -13,7 +13,6 @@ from mpi4py import MPI
 import random
 import pandas as pd
 import pickle
-from statistics import median
 
 
 #
@@ -82,9 +81,9 @@ Input:
 - data_address: file path to the halo catalogue
 - string: "+" for selecting halos above the mass limit, "-" for selecting halos below the mass limit, "all" for selecting all halos
 - mass_limit: the mass limit for selecting halos
-- extra_columns (default=False): flag for whether to include additional columns of [Rvir,M200b] in the output
+- extra_columns (default=False): flag for whether to include additional columns of [Rvir] in the output
 Output:
-- A new catalogue with [x,y,z,v_x,v_y,v_z] and additional columns of[Rvir,M200b] of halo population if requested
+- A new catalogue with [x,y,z,v_x,v_y,v_z, M200b] and additional columns of [Rvir] of halo population if requested
         """
         data = np.loadtxt(data_address);
         
@@ -98,31 +97,37 @@ Output:
                 halo_pop = np.zeros((np.shape(data[condition])[0],6))
             for i in range(6):
                 halo_pop[:,i] = data[condition][:,8+i]
+            halo_pop[:,6] = data[condition][:,20] # Mass 
+
             if extra_columns == True:
-                halo_pop[:,6] = data[condition][:,5] # R_vir
-                halo_pop[:,7] = data[condition][:,20] # Mass 200b
+                halo_pop[:,7] = data[condition][:,5] # R_vir
+                
         elif (string == "-"):
             condition = data[:,20]<= mass_limit;
             if extra_columns == True:
                 halo_pop = np.zeros((np.shape(data[condition])[0],8))
             else:
-                halo_pop = np.zeros((np.shape(data[condition])[0],6))
+                halo_pop = np.zeros((np.shape(data[condition])[0],7))
+                
             for i in range(6):
                 halo_pop[:,i] = data[condition][:,8+i]
+            halo_pop[:,6] = data[:,20] # Mass 200b
+
             if (extra_columns):
-                halo_pop[:,6] = data[condition][:,5] # R_vir
-                halo_pop[:,7] = data[condition][:,20] # Mass
+                halo_pop[:,7] = data[condition][:,5] # R_vir
  
         elif (string == "all"):
             if extra_columns == True:
                 halo_pop = np.zeros((np.shape(data)[0],8))
             else:
-                halo_pop = np.zeros((np.shape(data)[0],6))
+                halo_pop = np.zeros((np.shape(data)[0],7))
             for i in range(6):
                 halo_pop[:,i] = data[:,8+i]
+            halo_pop[:,6] = data[:,20] # Mass 200b
+            
             if (extra_columns):
-                halo_pop[:,6] = data[:,5] # R_vir
-                halo_pop[:,7] = data[:,20] # Mass
+                halo_pop[:,7] = data[:,5] # R_vir
+                # halo_pop[:,7] = data[:,20] # Mass
         return halo_pop;
 
 
@@ -204,6 +209,70 @@ Output:
         # pos_halos =pos[condition_tot]# For test you can output pos[vel_halos, pos_halos];
         return vel_halos
     
+    def precalculate_halo_positions(self, ngrid, pos, vel, mass):
+        """
+        Pre-calculate halo positions, velocities, and mass for unique sub-box indices.
+
+        Parameters:
+            ngrid (int): Number of grids in the simulation.
+            pos (array-like): Array of 3D vectors representing the positions of halos.
+            vel (array-like): Array of 3D vectors representing the velocities of halos.
+            mass (array-like): Array of halo masses.
+
+        Returns:
+            dict: Dictionary mapping sub-box indices to corresponding halo positions, velocities, and mass.
+                  The sub-box indices are represented as tuples.
+                  The values in the dictionary are arrays of shape (N, 8) containing the positions, velocities, and mass of halos in the sub-box.
+
+        """
+        boxsize = self.boxsize;
+
+        # Calculate unique sub-box indices based on halo positions
+        unique_indices = np.unique(np.floor(pos * ngrid / boxsize), axis=0)
+
+        # Dictionary to store halo positions, velocities, and mass
+        halo_positions = {}
+
+        # Calculate halo positions for each unique sub-box index
+        for sub_box_index in unique_indices:
+            # Generate conditions for sub-box filtering
+            condition_x = (np.floor(pos[:,0] * ngrid / boxsize) == sub_box_index[0])
+            condition_y = (np.floor(pos[:,1] * ngrid / boxsize) == sub_box_index[1])
+            condition_z = (np.floor(pos[:,2] * ngrid / boxsize) == sub_box_index[2])
+
+            # Combine conditions to get the total condition for the sub-box
+            condition_tot = (condition_x) & (condition_y) & (condition_z)
+
+            # Get halo positions, velocities, and mass for the sub-box
+            halos_in_cell = np.concatenate((pos[condition_tot], vel[condition_tot], mass[condition_tot][:, np.newaxis]), axis=1)
+
+            # Store the halo positions, velocities, and mass for the sub-box index
+            halo_positions[tuple(sub_box_index)] = halos_in_cell
+
+        return halo_positions
+
+    def halos_in_cell(self, ngrid, pos, vel , mass, sub_box_index):
+        boxsize = self.boxsize;
+        """
+        Given halos, and a sub-box index, this function returns the velocities, positions and mass of halos that are located in the specified sub-box.
+
+            Parameters:
+                ngrid (int): number of grids in the simulation
+                halos (N*7 D array): an array containing the position (N*3), velocity (N*3) and mass (N*1) of halos
+                sub_box_index (list): a list of 3 integers representing the index of the sub-box (x, y, z)
+
+            Returns:
+                A N*8 D array containing the positions, velocities and mass of halos in the specified sub-box
+        """
+        condition_x = (np.floor(pos[:,0]*ngrid/boxsize)== sub_box_index[0])
+        condition_y = (np.floor(pos[:,1]*ngrid/boxsize)== sub_box_index[1])
+        condition_z = (np.floor(pos[:,2]*ngrid/boxsize)== sub_box_index[2])
+        condition_tot = (condition_x) & (condition_y) & (condition_z)
+        # pos_halos =pos[condition_tot]# For test you can output pos[vel_halos, pos_halos];
+        # return [pos[condition_tot], vel[condition_tot], mass[condition_tot]]
+        # Concatenate the position, velocity, and mass arrays along the second axis
+        halos_in_cell = np.concatenate((pos[condition_tot], vel[condition_tot], mass[condition_tot][:, np.newaxis]), axis=1)
+        return halos_in_cell
     def pos_in_cell(self, ngrid, pos, vel, sub_box_index):
         boxsize = self.boxsize;
         """
@@ -224,7 +293,60 @@ Output:
         # vel_halos =vel[condition_tot];
         pos_halos =pos[condition_tot]# For test you can output pos[vel_halos, pos_halos];
         return pos_halos
+    
+    def precalculate_bulk_velocities(self, ngrid, pos, vel):
+        """
+        Pre-calculate bulk velocities and their standard deviations for unique sub-box indices.
 
+        Parameters:
+            ngrid (int): Number of grids in the simulation.
+            pos (array-like): Array of 3D vectors representing the positions of particles.
+            vel (array-like): Array of 3D vectors representing the velocities of particles.
+
+        Returns:
+            dict: Dictionary mapping sub-box indices to corresponding bulk velocities and standard deviations.
+                  The sub-box indices are represented as tuples.
+                  The values in the dictionary are of the form: [velocity, standard_deviation].
+
+        """
+        boxsize = self.boxsize;
+
+        # Calculate unique sub-box indices based on particle positions
+        unique_indices = np.unique(np.floor(pos * ngrid / boxsize), axis=0)
+
+        # Dictionary to store bulk velocities and standard deviations
+        bulk_velocities = {}
+
+        # Calculate bulk velocities for each unique sub-box index
+        for sub_box_index in unique_indices:
+            # Generate conditions for sub-box filtering
+            condition_x = (np.floor(pos[:,0] * ngrid / boxsize) == sub_box_index[0])
+            condition_y = (np.floor(pos[:,1] * ngrid / boxsize) == sub_box_index[1])
+            condition_z = (np.floor(pos[:,2] * ngrid / boxsize) == sub_box_index[2])
+
+            # Combine conditions to get the total condition for the sub-box
+            condition_tot = (condition_x) & (condition_y) & (condition_z)
+
+            # Calculate average velocity components for the sub-box
+            vel_grids = np.array([
+                np.average(vel[condition_tot, 0]),
+                np.average(vel[condition_tot, 1]),
+                np.average(vel[condition_tot, 2])
+            ])
+
+            # Calculate standard deviations of velocity components for the sub-box
+            sigma_vel_grids = np.array([
+                np.std(vel[condition_tot, 0]),
+                np.std(vel[condition_tot, 1]),
+                np.std(vel[condition_tot, 2])
+            ])
+
+            # Store the bulk velocities and standard deviations for the sub-box index
+            bulk_velocities[tuple(sub_box_index)] = [vel_grids, sigma_vel_grids]
+
+        return bulk_velocities
+
+    
     def velocity_bulk(self, ngrid, pos,vel, sub_box_index):
         boxsize = self.boxsize;
         """
@@ -245,7 +367,8 @@ Output:
         condition_tot = (condition_x) & (condition_y) & (condition_z)
         vel_grids= np.array([np.average(vel[condition_tot,0]),np.average(vel[condition_tot,1]),np.average(vel[condition_tot,2])])
         sigma_vel_grids= np.array([np.std(vel[condition_tot,0]),np.std(vel[condition_tot,1]),np.std(vel[condition_tot,2])])
-        return [vel_grids,sigma_vel_grids];
+        numbers = np.shape(vel[condition_tot,0])[0]
+        return [vel_grids,sigma_vel_grids, numbers];
 
 
     def catalogue_header(self, address, column=-1):
@@ -301,6 +424,53 @@ Output:
             for j in range(3):
                 res[i,j] = random.randint(0,ngrid-1)      
         return res
+    
+#     def All_sub_box(self, ngrid):
+#         """
+#         Given the number of grids this function generates and returns all sub-box indices.
+    
+#     Parameters:
+#         ngrid (int): number of grids in the simulation
+        
+#     Returns:
+#         A 2D array of shape (number, 3) containing the all  sub-box indices.
+#         """
+#         indices=[]
+#         for i in range(ngrid):
+#             for j in range(ngrid):
+#                 for k in range(ngrid):
+#                     indices.append([i, j, k])    
+#         return indices
+    def All_sub_box(self, ngrid, rank=None, n_procs=None):
+        """
+        Given the number of grids this function generates and returns the sub-box indices
+        that should be processed by the current rank.
+
+        Parameters:
+            ngrid (int): number of grids in the simulation
+            rank (int): rank of the current process (default: None)
+            n_procs (int): total number of processes (default: None)
+
+        Returns:
+            A 2D array of shape (number, 3) containing the sub-box indices for the current rank.
+        """
+        if rank is None or n_procs is None:
+            indices = []
+            for i in range(ngrid):
+                for j in range(ngrid):
+                    for k in range(ngrid):
+                        indices.append([i, j, k])
+            return indices
+        else:
+            sub_box_per_core = int(np.ceil(ngrid**3 / n_procs))
+            start_index = sub_box_per_core * rank
+            end_index = min(sub_box_per_core * (rank + 1), ngrid**3)
+            indices = []
+            for idx in range(start_index, end_index):
+                i, j, k = np.unravel_index(idx, (ngrid, ngrid, ngrid))
+                indices.append([i, j, k])
+            return indices
+
 
 
     def data_sub_boxes(self, sub_box_lists, ngrid, pos_pcl, vel_pcl, pos_p1, vel_p1, pos_p2, vel_p2):

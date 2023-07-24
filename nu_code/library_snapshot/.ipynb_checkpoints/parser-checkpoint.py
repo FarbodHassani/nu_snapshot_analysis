@@ -50,7 +50,7 @@ def parse_parameter_file(file_path):
                     value = [int(value)]
                     
                     
-                elif parameter in ["ngrid_min", "ngrid_max", "ngrid_step"]:
+                elif parameter in ["ngrid_min", "ngrid_max", "ngrid_step","core_number"]:
                     value = int(value)
                     
                 elif parameter == "save_path":
@@ -64,7 +64,7 @@ def parse_parameter_file(file_path):
 
                  # Store the parameter and value in the dictionary
                 parameters[parameter] = value
-                print(f'{parameter}: {value}')
+                # print(f'{parameter}: {value}')
                 
     return parameters
 
