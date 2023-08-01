@@ -24,8 +24,9 @@ def parse_parameters():
     ngrid_min =parameters['ngrid_min']
     ngrid_max = parameters['ngrid_max']
     ngrid_step = parameters['ngrid_step']
+    mass_limit = parameters['mass_limit']
     
-    return bulk_species_ini, save_path, sim_path, ngrid_min, ngrid_max, ngrid_step
+    return bulk_species_ini, save_path, sim_path, ngrid_min, ngrid_max, ngrid_step, mass_limit
 
 
 
@@ -50,7 +51,7 @@ def parse_parameters():
 #     return pos, vel, mass # return the loaded particles or halo data
 
 #### loading data
-def load_data(bulk_species, sim_path, obj):
+def load_data(bulk_species, sim_path, obj, mass_limit=1):
     # particles read
     if bulk_species == 'cdm':
         # snapshot = sim_path  + '/' + sim + '/output/snap00' + str(snap_num) + '_cdm'
@@ -68,7 +69,7 @@ def load_data(bulk_species, sim_path, obj):
         vel = nu_pcl[1]
     elif bulk_species == 'halo':
         halo_address = sim_path
-        halo_all = obj.halo_selection(halo_address, 'all', 0)
+        halo_all = obj.halo_selection(halo_address, '+', mass_limit)
         pos = halo_all[:, :3]
         vel = halo_all[:, 3:6]
         # mass = halo_all[:, 6]
@@ -133,15 +134,18 @@ def generate_new_string(file_address):
     
 def save_dataframe(df, simulation, bulk_species, metadata, ngrid, save_path):
     # Add metadata
-    df.attrs['metadata'] = metadata
+    # df.attrs['metadata'] = metadata
+    data_to_save = {
+        'metadata': metadata,
+        'sub_box_data': df
+    }
 
     # Save the dataframe
     if not os.path.exists(save_path):
         os.makedirs(save_path)
 
     with open(save_path+'/data_ngrid_'+str(ngrid)+'_sim_'+simulation+'.pickle', 'wb') as handle:
-        pickle.dump(df, handle, protocol=pickle.HIGHEST_PROTOCOL)
-
+        pickle.dump(data_to_save, handle)
 
 def read_file(file_path, msg=False):
     """
