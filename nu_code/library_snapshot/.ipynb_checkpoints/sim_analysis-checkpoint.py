@@ -94,7 +94,7 @@ Output:
             if extra_columns == True:
                 halo_pop = np.zeros((np.shape(data[condition])[0],8))
             else:
-                halo_pop = np.zeros((np.shape(data[condition])[0],6))
+                halo_pop = np.zeros((np.shape(data[condition])[0],7))
             for i in range(6):
                 halo_pop[:,i] = data[condition][:,8+i]
             halo_pop[:,6] = data[condition][:,20] # Mass 
