@@ -11,7 +11,7 @@ import os
 from library_snapshot import sim_analysis as analysis
 import time
 import psutil
-
+from MAS_library import readsnap
 ##############
 #### MPI part: #
 ##############
@@ -39,45 +39,77 @@ if sim_type=="0.0ev":
             print_error("In the case of LCDM we don't have nu snapshots!")
 
 obj = analysis.sim(boxsize);
-if bulk_species_ini[0] == 'halo':
-    pos, vel = load_data(bulk_species_ini[0], file_path[0], obj, mass_limit);       
-else:
-    pos, vel = load_data(bulk_species_ini[0], file_path[0], obj);       
-if rank == 0:
-    print("Loading data for bulk species '{}' in simulation '{}' with boxsize '{}'".format(bulk_species_ini[0], file_path[0], boxsize))
-    print("",np.shape(pos)[0], " number of particles to analyse")
-    print_usage(start_time_all, start_mem_all, ', Data initialized!')
 
-# ###########
+
+
+###################################
 # main part:
-# ###########
+###################################
+if bulk_species_ini[0] != 'halo': # In the case of neutrinos and cdm we need to know how many sub-files we have so that to loop over
+    head = readsnap.snapshot_header(file_path[0])
+    num_files = head.filenum #
+    ptype =  head.format; # type of gadget 2 format
+    if rank == 0:
+        print("number of gadget files to be loaded: "+str(num_files))
 
 # Loop over the assigned ngrid_list for this process
 ngrid_list_split = np.array_split(ngrid_list, size)
-
 for ngrid in ngrid_list_split[rank]:
     start_time = time.time()
     start_mem = psutil.Process().memory_info().rss
     metadata = {'simulation': simulation, 'boxsize': boxsize, 'ngrid': ngrid, 'dx':  boxsize/ngrid, 'ngrid_min': ngrid_min, 'ngrid_max': ngrid_max, 'ngrid_step': ngrid_step  , 'file_path': file_path, 'bulk_species': bulk_species_ini, 'ngrid': ngrid, 'save_path': save_path}
-    
+
     sub_box_data = {}  # Dictionary to store sub-box data
     coeff = ngrid / boxsize;
-    for pcl in range(np.shape(pos)[0]):
-        x_index = int(np.floor(pos[pcl, 0] * coeff))
-        y_index = int(np.floor(pos[pcl, 1] * coeff))
-        z_index = int(np.floor(pos[pcl, 2] * coeff))
-        sub_box_index = (x_index, y_index, z_index)
+    #####################################
+    ## In the case of halo catalogues!
+    #####################################
+    if bulk_species_ini[0] == 'halo':
+        if rank == 0:
+            print("The halo catalogue is loading in "+file_path[0]," mass_cut= 10^",np.round(np.log10(mass_limit),1))
+        pos, vel = load_data_halo(file_path[0], obj, mass_limit);
+        for pcl in range(np.shape(pos)[0]):
+            x_index = int(np.floor(pos[pcl, 0] * coeff))
+            y_index = int(np.floor(pos[pcl, 1] * coeff))
+            z_index = int(np.floor(pos[pcl, 2] * coeff))
+            sub_box_index = (x_index, y_index, z_index)
+            # Check if sub-box exists in the dictionary, if not, initialize it
+            if sub_box_index not in sub_box_data:
+                sub_box_data[sub_box_index] = {
+                    'sum_bulk_vel': 0.0,
+                    'N': 0
+                }
 
-        # Check if sub-box exists in the dictionary, if not, initialize it
-        if sub_box_index not in sub_box_data:
-            sub_box_data[sub_box_index] = {
-                'sum_bulk_vel': 0.0,
-                'N': 0
-            }
+            # Accumulate velocity and number of particles in the sub-box
+            sub_box_data[sub_box_index]['sum_bulk_vel'] += vel[pcl]
+            sub_box_data[sub_box_index]['N'] += 1
+    #####################################
+    ## In the case of cdm/nu !
+    #####################################
+    else:
+        ## We loop over gadget files and load them one-by-one which is more efficent memory-wise
+        for num in range(num_files):
+            pos, vel = load_data_gadget(file_path[0]+"."+str(num), ptype, obj);
+            if rank == 0:
+                head = readsnap.snapshot_header(file_path[0]+"."+str(num))
+                print("The file "+file_path[0]+"."+str(num),"is loading, file number", str(num),", type:"+bulk_species_ini[0],", number of pcl to be laoded: ",str(head.npart),", loaded num of particles:"+str(np.shape(pos)[0]))
 
-        # Accumulate velocity and number of particles in the sub-box
-        sub_box_data[sub_box_index]['sum_bulk_vel'] += vel[pcl]
-        sub_box_data[sub_box_index]['N'] += 1
+            for pcl in range(np.shape(pos)[0]):
+                x_index = int(np.floor(pos[pcl, 0] * coeff))
+                y_index = int(np.floor(pos[pcl, 1] * coeff))
+                z_index = int(np.floor(pos[pcl, 2] * coeff))
+                sub_box_index = (x_index, y_index, z_index)
+
+                # Check if sub-box exists in the dictionary, if not, initialize it
+                if sub_box_index not in sub_box_data:
+                    sub_box_data[sub_box_index] = {
+                        'sum_bulk_vel': 0.0,
+                        'N': 0
+                    }
+
+                # Accumulate velocity and number of particles in the sub-box
+                sub_box_data[sub_box_index]['sum_bulk_vel'] += vel[pcl]
+                sub_box_data[sub_box_index]['N'] += 1
 
     ### After looping over all particles we save the data!
     save_dataframe(sub_box_data, simulation, bulk_species_ini[0] , metadata, ngrid, save_path)

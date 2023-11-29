@@ -1,14 +1,16 @@
 """
 This module contains the sim_analysis class, which provides functionality for
-working with simulation data. 
+working with simulation data.
 """
 
-import MAS_library as MASL
+# import MAS_library as MASL
 import numpy as np
 import scipy
 import h5py as h5
 import matplotlib.pyplot as plt
-import readgadget
+# import readgadget
+import MAS_library as MASL
+from MAS_library import readsnap
 from mpi4py import MPI
 import random
 import pandas as pd
@@ -39,10 +41,10 @@ class sim:
     def norm(self, x):
         """
         Calculate the norm of a given vector.
-        
+
         Parameters:
             x (list or numpy array): vector for which the norm is to be calculated.
-        
+
         Returns:
             float: norm of the vector x.
         """
@@ -52,11 +54,11 @@ class sim:
     def dist(self, x, y):
         """
         Calculate the distance between two points.
-        
+
         Parameters:
             x (list or numpy array): first point.
             y (list or numpy array): second point.
-        
+
         Returns:
             float: distance between points x and y.
         """
@@ -65,17 +67,17 @@ class sim:
     def statistics(self, x):
         """
     Given a vector, returns the average and standard deviation of the values in the list.
-    
+
     Parameters:
         x (list or array): a vector containing numerical values
-        
+
     Returns:
         A tuple of the form (average, standard deviation)
         """
         return (np.average(x),np.std(x));
 
     def halo_selection(self, data_address, string, mass_limit, Remove_subhalo="no",  extra_columns=False):
-        """ 
+        """
         This function filters a halo catalogue from Rockstar based on a given mass limit and a string indicating whether to select larger or smaller halos.
 Input:
 - data_address: file path to the halo catalogue
@@ -86,7 +88,7 @@ Output:
 - A new catalogue with [x,y,z,v_x,v_y,v_z, M200b] and additional columns of [Rvir] of halo population if requested
         """
         data = np.loadtxt(data_address);
-        
+
         if (Remove_subhalo=='yes'):
             data = data[data[:,41]==-1]; # Only choose parent halos
         if (string == "+"):
@@ -97,25 +99,25 @@ Output:
                 halo_pop = np.zeros((np.shape(data[condition])[0],7))
             for i in range(6):
                 halo_pop[:,i] = data[condition][:,8+i]
-            halo_pop[:,6] = data[condition][:,20] # Mass 
+            halo_pop[:,6] = data[condition][:,20] # Mass
 
             if extra_columns == True:
                 halo_pop[:,7] = data[condition][:,5] # R_vir
-                
+
         elif (string == "-"):
             condition = data[:,20]<= mass_limit;
             if extra_columns == True:
                 halo_pop = np.zeros((np.shape(data[condition])[0],8))
             else:
                 halo_pop = np.zeros((np.shape(data[condition])[0],7))
-                
+
             for i in range(6):
                 halo_pop[:,i] = data[condition][:,8+i]
             halo_pop[:,6] = data[:,20] # Mass 200b
 
             if (extra_columns):
                 halo_pop[:,7] = data[condition][:,5] # R_vir
- 
+
         elif (string == "all"):
             if extra_columns == True:
                 halo_pop = np.zeros((np.shape(data)[0],8))
@@ -124,7 +126,7 @@ Output:
             for i in range(6):
                 halo_pop[:,i] = data[:,8+i]
             halo_pop[:,6] = data[:,20] # Mass 200b
-            
+
             if (extra_columns):
                 halo_pop[:,7] = data[:,5] # R_vir
                 # halo_pop[:,7] = data[:,20] # Mass
@@ -133,13 +135,13 @@ Output:
 
 #     def alpha_list(self, vel, velocity_bulk):
 #         """
-#          Given two 3D arrays vel and velocity_bulk, this function computes the correlation coefficent of each vector in vel with the velocity_bulk vector. 
+#          Given two 3D arrays vel and velocity_bulk, this function computes the correlation coefficent of each vector in vel with the velocity_bulk vector.
 #     Returns the average, standard deviation, and number of vectors in vel that have been used for calculation.
-    
+
 #     Parameters:
 #         vel (3D array): an array of 3D vectors representing the velocities of halos/particles
 #         velocity_bulk (3D array): a 3D vector representing the bulk velocity of a given sub-box
-        
+
 #     Returns:
 #         A list of correlation coefficents!
 #         """
@@ -148,18 +150,18 @@ Output:
 #             tmp[i] = np.dot(vel[i], velocity_bulk)/(np.linalg.norm(vel[i]))/(np.linalg.norm(velocity_bulk))
 #         # avg =  np.mean(tmp)
 #         # std = np.std(tmp);
-        
+
 #         return tmp # returns sum of all dot product and number of halos in that cell
 
 #     def sum_alpha(self, vel, velocity_bulk):
 #         """
 #          Given two 3D arrays vel and velocity_bulk, this function computes the correlation coefficent of each vector in vel with the velocity_bulk vector and returns all the computed alphas!
 #     Returns the average, standard deviation, and number of vectors in vel that have been used for calculation.
-    
+
 #     Parameters:
 #         vel (3D array): an array of 3D vectors representing the velocities of halos/particles
 #         velocity_bulk (3D array): a 3D vector representing the bulk velocity of a given sub-box
-        
+
 #     Returns:
 #         A list of the form [average, standard deviation, number of vectors in vel]
 #         """
@@ -168,18 +170,18 @@ Output:
 #             tmp[i] = np.dot(vel[i], velocity_bulk)/(np.linalg.norm(vel[i]))/(np.linalg.norm(velocity_bulk))
 #         avg =  np.mean(tmp)
 #         std = np.std(tmp);
-        
+
 #         return [avg, std, np.shape(vel)[0]] # returns sum of all dot product and number of halos in that cell
 
     def sum_vel_dot_vbulk(self, vel, velocity_bulk):
         """
-         Given two 3D arrays vel and velocity_bulk, this function computes the dot product of each vector in vel with the velocity_bulk vector. 
+         Given two 3D arrays vel and velocity_bulk, this function computes the dot product of each vector in vel with the velocity_bulk vector.
     Returns the average, standard deviation, and number of vectors in vel that have been used for calculation.
-    
+
     Parameters:
         vel (3D array): an array of 3D vectors representing the velocities of halos/particles
         velocity_bulk (3D array): a 3D vector representing the bulk velocity of a given sub-box
-        
+
     Returns:
         A list of the form [average, standard deviation, number of vectors in vel]
         """
@@ -208,7 +210,7 @@ Output:
         vel_halos =vel[condition_tot];
         # pos_halos =pos[condition_tot]# For test you can output pos[vel_halos, pos_halos];
         return vel_halos
-    
+
     def precalculate_halo_positions(self, ngrid, pos, vel, mass):
         """
         Pre-calculate halo positions, velocities, and mass for unique sub-box indices.
@@ -293,7 +295,7 @@ Output:
         # vel_halos =vel[condition_tot];
         pos_halos =pos[condition_tot]# For test you can output pos[vel_halos, pos_halos];
         return pos_halos
-    
+
     def precalculate_bulk_velocities(self, ngrid, pos, vel):
         """
         Pre-calculate bulk velocities and their standard deviations for unique sub-box indices.
@@ -346,18 +348,18 @@ Output:
 
         return bulk_velocities
 
-    
+
     def velocity_bulk(self, ngrid, pos,vel, sub_box_index):
         boxsize = self.boxsize;
         """
         Given positions, velocities, and a sub-box index, this function computes the bulk velocity and its standard deviation in the specified sub-box.
-    
+
     Parameters:
         ngrid (int): number of grids in the simulation
         pos (3D array): an array of 3D vectors representing the positions of halos
         vel (3D array): an array of 3D vectors representing the velocities of halos
         sub_box_index (list): a list of 3 integers representing the index of the sub-box (x, y, z)
-        
+
     Returns:
         A list of the form [[velocity_x, velocity_y, velocity_z], [standard deviation_x, standard deviation_y, standard deviation_z]]
         """
@@ -374,11 +376,11 @@ Output:
     def catalogue_header(self, address, column=-1):
         """
         Given the address of a halo catalogue, this function reads the header and prints it. If a column index is specified, it will only print that specific column.
-    
+
     Parameters:
         address (str): the filepath of the halo catalogue
         column (int): the index of the column to print, -1 to print the whole header (default)
-        
+
     Returns:
         None
         """
@@ -391,47 +393,47 @@ Output:
         if column!=-1:
             print(str(column)+":"+header_list[column])
 
-    def gadget_load(self, snapshot, ptype=[1]):
-        """
-        Given the filepath of a gadget 2 snapshot and a list of particle types, this function returns the positions and velocities of the specified particle types.
-    
-    Parameters:
-        snapshot (str): the filepath of the gadget 2 snapshot
-        ptype (list): list of integers representing the particle types to extract, [1] for CDM and [2] for neutrinos (default)
-        
-    Returns:
-        A 2D array of shape (2, N) containing the positions and velocities of the specified particle types, where N is the number of particles.
-        """
-        pos = readgadget.read_block(snapshot, "POS ", ptype)/1e3 #positions in Mpc/h
-        vel = readgadget.read_block(snapshot, "VEL ", ptype)     #peculiar velocities in km/s
-        # ids = readgadget.read_block(snapshot, "ID  ", ptype)-1   #IDs starting from 0
-        return np.array([pos,vel])
+    # def gadget_load(self, snapshot, ptype=1, num=0):
+    #     """
+    #     Given the filepath of a gadget 2 snapshot and a list of particle types, this function returns the positions and velocities of the specified particle types.
 
-    
+    # Parameters:
+    #     snapshot (str): the filepath of the gadget 2 snapshot
+    #     ptype (list): list of integers representing the particle types to extract, [1] for CDM and [2] for neutrinos (default)
+
+    # Returns:
+    #     A 2D array of shape (2, N) containing the positions and velocities of the specified particle types, where N is the number of particles.
+    #     """
+    #     pos = readsnap.read_block(snapshot, "POS ", ptype, True, 0, False, False,[0,num,0,0,0,0])/1e3 #positions in Mpc/h
+    #     vel = readsnap.read_block(snapshot, "VEL ", ptype, True, 0, False, False,[0,num,0,0,0,0])     #peculiar velocities in km/s
+    #     # ids = readsnap.read_block(snapshot, "ID  ", ptype)-1   #IDs starting from 0
+    #     return np.array([pos,vel])
+
+
     def Random_sub_box(self, ngrid, number):
         """
         Given the number of grids and the number of sub-boxes, this function generates and returns N randomly chosen sub-box indices.
-    
+
     Parameters:
         ngrid (int): number of grids in the simulation
         number (int): number of randomly chosen sub-boxes
-        
+
     Returns:
         A 2D array of shape (number, 3) containing the randomly chosen sub-box indices.
         """
         res = np.zeros((number,3)).astype(int)
         for i in range(number):
             for j in range(3):
-                res[i,j] = random.randint(0,ngrid-1)      
+                res[i,j] = random.randint(0,ngrid-1)
         return res
-    
+
 #     def All_sub_box(self, ngrid):
 #         """
 #         Given the number of grids this function generates and returns all sub-box indices.
-    
+
 #     Parameters:
 #         ngrid (int): number of grids in the simulation
-        
+
 #     Returns:
 #         A 2D array of shape (number, 3) containing the all  sub-box indices.
 #         """
@@ -439,7 +441,7 @@ Output:
 #         for i in range(ngrid):
 #             for j in range(ngrid):
 #                 for k in range(ngrid):
-#                     indices.append([i, j, k])    
+#                     indices.append([i, j, k])
 #         return indices
     def All_sub_box(self, ngrid, rank=None, n_procs=None):
         """
@@ -476,7 +478,7 @@ Output:
     def data_sub_boxes(self, sub_box_lists, ngrid, pos_pcl, vel_pcl, pos_p1, vel_p1, pos_p2, vel_p2):
         """
     Computes alpha and sigma_alpha for each sub-box, and returns all alphas for the given number of sub-boxes.
-    
+
     Parameters:
         sub_box_lists (list): index of sub-boxes to consider
         ngrid (int): Number of grids in the simulation, used to compute alpha over
@@ -486,10 +488,10 @@ Output:
         vel_p1 (np.array): N_p1 x 3 array containing the vx, vy, vz velocities of population 1
         pos_p2 (np.array): N_p2 x 3 array containing the x, y, z positions of population 2
         vel_p2 (np.array): N_p2 x 3 array containing the vx, vy, vz velocities of population 2
-        
+
     Returns:
-        A list containing [index of sub-box, average of alpha for population 1, average of alpha for population 2, 
-        standard deviation of alpha for population 1, standard deviation of alpha for population 2, 
+        A list containing [index of sub-box, average of alpha for population 1, average of alpha for population 2,
+        standard deviation of alpha for population 1, standard deviation of alpha for population 2,
         number of halos of population 1, number of halos of population 2] for each sub-box.
         """
         boxsize = self.boxsize;
@@ -505,7 +507,7 @@ Output:
             data.append([sub_box_index, vdvb_p1[0], vdvb_p2[0], vdvb_p1[1], vdvb_p2[1], vdvb_p1[2],  vdvb_p2[2]]);
             # [sub-box index, <v_i,v_b> population 1, <v_i,v_b> population 2, sigma v_i.v_b pop1, sigma v_i.v_b pop2, number of halos of pop1, number of halos of pop2]
         return data
-    
+
 
     def Parallelized_alpha_sub_boxes(self, sub_box_lists, ngrid, pos_pcl, vel_pcl, pos_p1, vel_p1, pos_p2, vel_p2):
         """
@@ -514,7 +516,7 @@ Output:
         It distributes the sub-boxes among the available CPUs and computes the bulk velocity and velocities of population 1 and 2 in each sub-box.
         Then it computes alpha and sigma_alpha for population 1 and 2.
         It returns an array containing the sub-box index, average of alpha and sigma_alpha for population 1 and 2.
-        
+
         Parameters:
     sub_box_lists (list): a list of indices of sub-boxes to compute alpha and sigma_alpha for
     ngrid (int): the number of grids
@@ -524,7 +526,7 @@ Output:
     vel_p1 (list or array): N_p1 x 3 array containing the velocities of population 1
     pos_p2 (list or array): N_p1 x 3 array containing the positions of population 2
     vel_p2 (list or array): N_p1 x 3 array containing the velocities of population 2
-    
+
 Returns:
     An array containing [index of sub-box, average of alpha for population 1, average of alpha for population 2, std of alpha for population 1, std of alpha for population 2]
         """
