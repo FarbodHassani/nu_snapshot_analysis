@@ -3,12 +3,11 @@ This module contains the sim_analysis class, which provides functionality for
 working with simulation data. 
 """
 
-import MAS_library as MASL
+# import MAS_library as MASL
 import numpy as np
 import scipy
 import h5py as h5
 import matplotlib.pyplot as plt
-import readgadget
 from mpi4py import MPI
 import random
 import pandas as pd
@@ -390,22 +389,6 @@ Output:
                 print(str(i)+":"+header_list[i])
         if column!=-1:
             print(str(column)+":"+header_list[column])
-
-    def gadget_load(self, snapshot, ptype=[1]):
-        """
-        Given the filepath of a gadget 2 snapshot and a list of particle types, this function returns the positions and velocities of the specified particle types.
-    
-    Parameters:
-        snapshot (str): the filepath of the gadget 2 snapshot
-        ptype (list): list of integers representing the particle types to extract, [1] for CDM and [2] for neutrinos (default)
-        
-    Returns:
-        A 2D array of shape (2, N) containing the positions and velocities of the specified particle types, where N is the number of particles.
-        """
-        pos = readgadget.read_block(snapshot, "POS ", ptype)/1e3 #positions in Mpc/h
-        vel = readgadget.read_block(snapshot, "VEL ", ptype)     #peculiar velocities in km/s
-        # ids = readgadget.read_block(snapshot, "ID  ", ptype)-1   #IDs starting from 0
-        return np.array([pos,vel])
 
     
     def Random_sub_box(self, ngrid, number):

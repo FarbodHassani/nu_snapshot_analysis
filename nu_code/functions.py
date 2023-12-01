@@ -7,18 +7,20 @@ import psutil
 import pickle
 import pandas as pd
 import re
-from MAS_library import readsnap
 sys.path.append('/mn/stornext/u3/hassanif/neutrino_niayesh/Analysis/nu_code/')
 from library_snapshot import system_tools as tools
 from library_snapshot import sim_analysis as analysis
 from library_snapshot import parser as parse
+from library_snapshot import readsnap
 sys.path.append('/mn/stornext/u3/hassanif/neutrino_niayesh/Analysis/nu_code/library_snapshot')
 from ReadHalos import *
 from ReadParticles import *
 
-##################
+
+
+################## 
 #### Parsing settings
-##################
+################## 
 def parse_parameters(file='./settings.ini'):
     parameters = parse.parse_parameter_file(file)
     # simulation = parameters['simulation']
@@ -29,7 +31,7 @@ def parse_parameters(file='./settings.ini'):
     ngrid_max = parameters['ngrid_max']
     ngrid_step = parameters['ngrid_step']
     mass_limit = parameters['mass_limit']
-
+    
     return bulk_species_ini, save_path, sim_path, ngrid_min, ngrid_max, ngrid_step, mass_limit
 
 def parse_parameters_JD(file='./settings.ini'):
@@ -47,57 +49,12 @@ def parse_parameters_JD(file='./settings.ini'):
 
     return bulk_species_ini, save_path, sim_path, ngrid_min, ngrid_max, ngrid_step, mass_limit, boxsize, sim_type
 
-#### loading data
-# def load_data_halo(sim_size, sim, snap_num, sim_path, halo_file, obj, verbose=True):
-#     if verbose:
-#         print("Loading data for bulk species '{}' in simulation '{}' at snapshot '{}'".format(sim, snap_num))
-
-#     if verbose:
-#         # print("\t Analyzing bulk species: {}".format(bulk_species))
-#         print("\t Analyzing snapshot number: {}".format(snap_num))
-#         print("\t Analyzing simulation: {}".format(sim))
-#         # print("\t bulk chosen to : {}".format(bulk_species))
-#     halo_address = halo_file
-#     halo_all = obj.halo_selection(halo_address, 'all', 0)
-#     pos = halo_all[:, :3]
-#     vel = halo_all[:, 3:6]
-#     mass = halo_all[:, 6]
-#     if verbose:
-#         print("\033[32m \t  number of  halos: " + str(np.shape(halo_all)[0]) + " \033[0m")
-
-#     return pos, vel, mass # return the loaded particles or halo data
-
-#### loading data
-# def load_data(bulk_species, sim_path, obj, mass_limit=1, num=0):
-#     # particles read
-#     if bulk_species == 'cdm':
-#         # snapshot = sim_path  + '/' + sim + '/output/snap00' + str(snap_num) + '_cdm'
-#         snapshot = sim_path
-#         ptype = 1
-#         cdm_pcl = obj.gadget_load(snapshot, ptype, num)
-#         pos = cdm_pcl[0]
-#         vel = cdm_pcl[1]
-#     elif bulk_species == 'nu':
-#         ptype = 1
-#         # snapshot = sim_path + '/' + sim + '/output/snap00' + str(snap_num) + '_ncdm0'
-#         snapshot = sim_path
-#         nu_pcl = obj.gadget_load(snapshot, ptype, num)
-#         pos = nu_pcl[0]
-#         vel = nu_pcl[1]
-#     elif bulk_species == 'halo':
-#         halo_address = sim_path
-#         halo_all = obj.halo_selection(halo_address, '+', mass_limit)
-#         pos = halo_all[:, :3]
-#         vel = halo_all[:, 3:6]
-#         # mass = halo_all[:, 6]
-
-    return pos, vel # return the loaded particles or halo data
 
 def load_data_gadget(sim_path, ptype ,obj):
     # particles read
     pos = readsnap.read_block(sim_path, "POS ", ptype)/1e3 #positions in Mpc/h #readsnap.read_block(snapshot, "POS ", ptype, True, 0, False, False,[0,num,0,0,0,0])/1e3
     vel = readsnap.read_block(sim_path, "VEL ", ptype)     #peculiar velocities in km/s
-
+    
     return pos, vel # return the loaded particles or halo data
 
 def load_data_halo(sim_path, obj, mass_limit=1):
@@ -105,7 +62,8 @@ def load_data_halo(sim_path, obj, mass_limit=1):
     halo_all = obj.halo_selection(sim_path, '+', mass_limit)
     pos = halo_all[:, :3]
     vel = halo_all[:, 3:6]
-    return pos, vel # return the loaded particles or halo data
+    mass =  halo_all[:,6]
+    return pos, vel, mass # return the loaded particles or halo data
 
 def load_data_JD(bulk_species, sim_path, obj, mass_limit=1, ranknum=512):
     # particles read
@@ -150,7 +108,7 @@ def load_data_JD(bulk_species, sim_path, obj, mass_limit=1, ranknum=512):
             vel_data.append(vel_data_add)
 
         pos_data = np.vstack(pos_data)
-        vel_data = np.vstack(vel_data)
+        vel_data = np.vstack(vel_data) 
     return pos_data, vel_data # return the loaded particles or halo data
 
 
@@ -164,14 +122,14 @@ def print_usage(start_time, start_mem, msg):
 
 def print_warning(text):
     print(f"\033[1m\033[94m WARNING:\033[0m {text}")
-
+    
 # def print_info(text):
 #     print(f"\033[34m\033[97m {text} \033[0m")
-
+    
 def print_error(text):
     print(f"\033[1m\033[94m ERROR: \033[0m {text}")
     sys.exit(1)
-
+    
 
 def create_empty_dataframe(column_names):
     return pd.DataFrame(columns=column_names)
@@ -209,7 +167,7 @@ def generate_new_string(file_address):
     return [new_string, L_value, energy_value]
 
 
-
+    
 def save_dataframe(df, simulation, bulk_species, metadata, ngrid, save_path):
     # Add metadata
     # df.attrs['metadata'] = metadata
@@ -240,8 +198,8 @@ def read_file(file_path, msg=False):
     if msg:
         print("To have the info: df[df['sub_box_index'].apply(lambda x: x == [1, 2, 1])].iloc[0]['halo_vel']")
         print("Also: df.attrs")
-
+    
     with open(file_path, 'rb') as handle:
         df = pickle.load(handle)
-
+        
     return df
