@@ -16,7 +16,12 @@ import os
 from library_snapshot import sim_analysis as analysis
 import time
 import psutil
-
+from library_snapshot import readsnap
+from collections import defaultdict
+from colossus.lss import peaks
+from colossus.lss import bias
+from colossus.cosmology import cosmology
+cosmology.setCosmology('planck18');
 # #############
 # ### MPI part: #
 # #############
@@ -57,28 +62,22 @@ rank_total = 512;
 start_time = time.time()
 start_mem = psutil.Process().memory_info().rss
 for ngrid in ngrid_list_split[rank]:
-    metadata = {'simulation': simulation, 'boxsize': boxsize, 'ngrid': ngrid, 'dx':  boxsize/ngrid, 'ngrid_min': ngrid_min, 'ngrid_max': ngrid_max, 'ngrid_step': ngrid_step, 'file_path': file_path, 'bulk_species': bulk_species_ini, 'ngrid': ngrid, 'save_path': save_path}
+    metadata = {'simulation': simulation, 'boxsize': boxsize, 'ngrid': ngrid, 'dx':  boxsize/ngrid, 'ngrid_min': ngrid_min, 'ngrid_max': ngrid_max, 'ngrid_step': ngrid_step  
+                , 'file_path': file_path, 'bulk_species': bulk_species_ini, 'ngrid': ngrid, 'save_path': save_path, 'sum_b_M':'<(bias_h + (mass)_h/(1.3e14))^0.85> average in each sub-box','sum_b_M_vel_h':'<(bias_h + (mass)_h/(1.3e14))^0.85 * v_h> average in each sub-box'}
     
     sub_box_data = {}  # Dictionary to store sub-box data
     coeff = ngrid / (boxsize+0.01);
     ### Loop over all the simulation files
     for rank_id in range(rank_total):
-        if bulk_species_ini[0] == 'cdm':
-            input_file = file_path[0]+"/0.000xv"+str(rank_id)+".dat"
-            file_data = ReadParticleFile(input_file)
-            pos = np.vstack((file_data[0], file_data[1], file_data[2])).T
-            vel = np.vstack((file_data[3], file_data[4], file_data[5])).T
-        if bulk_species_ini[0] == 'nu':
-            input_file = file_path[0]+"/0.000xv"+str(rank_id)+"_nu.dat"
-            file_data = ReadParticleFile(input_file)
-            pos = np.vstack((file_data[0], file_data[1], file_data[2])).T
-            vel = np.vstack((file_data[3], file_data[4], file_data[5])).T  
-        elif bulk_species_ini[0] == 'halo':
+        
+        ### In the case of halos!
+        if bulk_species_ini[0] == 'halo':
             if sim_type=="0.0ev":
                 input_file = file_path[0]+"/0.000halo"+str(rank_id)+".dat"
                 a = 1.;
                 file_data = ReadHaloFile_lcdm(input_file, a)
                 cond = (file_data[6] >= mass_limit)  # Assuming file_data[6] contains the values you want to compare
+                masses = file_data[6];
                 pos = np.vstack((file_data[0][cond], file_data[1][cond], file_data[2][cond])).T
                 vel = np.vstack((file_data[3][cond], file_data[4][cond], file_data[5][cond])).T
             else:
@@ -86,25 +85,61 @@ for ngrid in ngrid_list_split[rank]:
                 a = 1.;
                 file_data = ReadHaloFile_data(input_file, a)
                 cond = (file_data[6] >= mass_limit)  # Assuming file_data[6] contains the values you want to compare
+                masses = file_data[6];
                 pos = np.vstack((file_data[0][cond], file_data[1][cond], file_data[2][cond])).T
                 vel = np.vstack((file_data[3][cond], file_data[4][cond], file_data[5][cond])).T
         ### Need to prepare the positions and velocities before this loop
-        for pcl in range(np.shape(pos)[0]):
-            x_index = int(np.floor(pos[pcl, 0] * coeff))
-            y_index = int(np.floor(pos[pcl, 1] * coeff))
-            z_index = int(np.floor(pos[pcl, 2] * coeff))
-            sub_box_index = (x_index, y_index, z_index)
+            for pcl in range(np.shape(pos)[0]):
+                x_index = int(np.floor(pos[pcl, 0] * coeff))
+                y_index = int(np.floor(pos[pcl, 1] * coeff))
+                z_index = int(np.floor(pos[pcl, 2] * coeff))
+                sub_box_index = (x_index, y_index, z_index)
+                mass = masses[pcl];
+                bias_h = bias.haloBias(mass, model = 'sheth01', z = 0.0, mdef = '200m')
+                # Check if sub-box exists in the dictionary, if not, initialize it
+                if sub_box_index not in sub_box_data:
+                    sub_box_data[sub_box_index] = {
+                        'sum_bulk_vel': 0.0,
+                        'sum_b_M': 0.0, # (bias_h + (mass)_h/(1.3e14))^0.85 average in each sub-box
+                        'sum_b_M_vel_h': 0.0, #(bias_h + (mass)_h/(1.3e14))^0.85* vh/2. average in each sub-box
+                        'N': 0
+                    }
+                # Accumulate velocity and number of particles in the sub-box
+                sub_box_data[sub_box_index]['sum_bulk_vel'] += vel[pcl]
+                sub_box_data[sub_box_index]['sum_b_M'] += (bias_h + (mass/(1.3*1.e14))**(0.85));
+                sub_box_data[sub_box_index]['sum_b_M_vel_h'] += (bias_h + (mass/(1.3*1.e14))**(0.85))*vel[pcl];
+                sub_box_data[sub_box_index]['N'] += 1
+
+        ## For cdm and neutrinos!
+        else:
+            if bulk_species_ini[0] == 'cdm':
+                input_file = file_path[0]+"/0.000xv"+str(rank_id)+".dat"
+                file_data = ReadParticleFile(input_file)
+                pos = np.vstack((file_data[0], file_data[1], file_data[2])).T
+                vel = np.vstack((file_data[3], file_data[4], file_data[5])).T
+            if bulk_species_ini[0] == 'nu':
+                input_file = file_path[0]+"/0.000xv"+str(rank_id)+"_nu.dat"
+                file_data = ReadParticleFile(input_file)
+                pos = np.vstack((file_data[0], file_data[1], file_data[2])).T
+                vel = np.vstack((file_data[3], file_data[4], file_data[5])).T  
+
+            for pcl in range(np.shape(pos)[0]):
+                x_index = int(np.floor(pos[pcl, 0] * coeff))
+                y_index = int(np.floor(pos[pcl, 1] * coeff))
+                z_index = int(np.floor(pos[pcl, 2] * coeff))
+                sub_box_index = (x_index, y_index, z_index)
+                # Check if sub-box exists in the dictionary, if not, initialize it
+                if sub_box_index not in sub_box_data:
+                    sub_box_data[sub_box_index] = {
+                        'sum_bulk_vel': 0.0,
+                        'N': 0
+                    }
+        
+                # Accumulate velocity and number of particles in the sub-box
+                sub_box_data[sub_box_index]['sum_bulk_vel'] += vel[pcl]
+                sub_box_data[sub_box_index]['N'] += 1
     
-            # Check if sub-box exists in the dictionary, if not, initialize it
-            if sub_box_index not in sub_box_data:
-                sub_box_data[sub_box_index] = {
-                    'sum_bulk_vel': 0.0,
-                    'N': 0
-                }
-            # Accumulate velocity and number of particles in the sub-box
-            sub_box_data[sub_box_index]['sum_bulk_vel'] += vel[pcl]
-            sub_box_data[sub_box_index]['N'] += 1
-            
+
         if rank == 0:
             if(rank_id%10==0):
                 print_usage(start_time, start_mem, "; file number "+str(rank_id)+" is loaded for N_grid: "+str(ngrid))
