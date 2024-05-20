@@ -400,7 +400,7 @@ def analyze_ngrid(ngrid, save_path, metadata, spec, sim, L, Mass_cut, pos_halos,
     for sub_box_index in index_pos_unique:
         condition_sub_box = np.all((index_pos == sub_box_index), axis=1)
         n_h = np.sum(condition_sub_box);
-        if n_h > 1:
+        if n_h > 2: # n_h must be larger than 2, based on definition of variance and the fact that we need 3 points to compute in regression!
             x_dot_y, x_dot_x, b, alpha, Variance_beta, n_h = analyze_sub_box(sub_box_index, condition_sub_box, ngrid, sim, spec, Mass_cut, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, vel_halos, masses, biases, n_h, cdm_analysis, nu_analysis)
             
             # Store sub-box specific data
@@ -551,7 +551,7 @@ def compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell
     for i in range(np.shape(x_i_list)[0]):
         errors = y_minus_yavg - alpha[i] - b[i] * x_i_list[i]  # e_i = y_i - alpha - beta x_i; An N*3 array
         sum_errors2 = np.sum(errors * errors)  # sum of e_i^2
-        Variance_beta = sum_errors2 / (n_h * n_h * np.sum(x_dot_x))  # Variance of the slope
+        Variance_beta = sum_errors2 / ((n_h-2) * (n_h-1) * np.sum(x_dot_x))  # Variance of the slope/ n_h-2 is from the formula! 
         Variance_beta_list.append(Variance_beta)
         
     Variance_beta = np.array(Variance_beta_list)

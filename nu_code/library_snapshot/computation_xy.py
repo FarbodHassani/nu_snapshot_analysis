@@ -16,31 +16,64 @@ def nested_dict(n, type): # definingnested dictionary!
     else:
         return defaultdict(lambda: nested_dict(n-1, type))
 
-
 def compute_regression(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num=1, run_tests=False, remove_extra_files=False):
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
 
-    if rank == 0:
-        print("Releasing extra cores and running compute_regression with one core...")
-
     # Get the total number of processes
     size = comm.Get_size()
 
-    if size == 1:
-        # Perform the computation
-        compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, run_tests, remove_extra_files)
-        return 
+    if size > 1:
+        # If more than 1 process, release extra cores
+        if rank == 0:
+            print("Releasing extra cores and running compute_regression with one core...")
 
-    # Spawn a new process
+        # Barrier to ensure all processes see the message
+        comm.Barrier()
+
+        # Split the communicator to isolate one process
+        new_comm = comm.Split(color=(rank == 0), key=0)
+
+        if rank == 0:
+            # Run compute_regression_func only on the process with rank 0
+            compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, run_tests, remove_extra_files)
+
+        # Barrier to ensure all processes finish before continuing
+        comm.Barrier()
+
+        # Free the new communicator
+        new_comm.Free()
+
+        if rank == 0:
+            print("compute_regression finished successfully.")
     else:
-        new_comm = comm.Spawn(target=compute_regression_func, args=(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, run_tests, remove_extra_files))
-    
-        # Wait for the spawned process to finish
-        new_comm.Barrier()
+        # If only 1 process, simply call compute_regression_func
+        compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, run_tests, remove_extra_files)
 
-    if rank == 0:
-        print("compute_regression finished successfully.")
+# def compute_regression(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num=1, run_tests=False, remove_extra_files=False):
+#     comm = MPI.COMM_WORLD
+#     rank = comm.Get_rank()
+
+#     if rank == 0:
+#         print("Releasing extra cores and running compute_regression with one core...")
+
+#     # Get the total number of processes
+#     size = comm.Get_size()
+#     # print(size)
+#     if rank == 0:
+#         # Perform the computation
+#         compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, run_tests, remove_extra_files)
+
+#     # # Spawn a new process
+#     # else:
+#     #     print("IM HERE")
+#     #     new_comm = comm.Spawn(target=compute_regression_func, args=(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, run_tests, remove_extra_files))
+    
+#     #     # Wait for the spawned process to finish
+#     #     new_comm.Barrier()
+
+#     if rank == 0:
+#         print("compute_regression finished successfully.")
 
 def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, run_tests, remove_extra_files):
     """
@@ -77,25 +110,27 @@ def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_p
             data_set = load_xy_data_ngrid(save_path, spec, sim, Mass_cut, ngrid)
             for it in range(iteration_num):
                 if it==0:
-                    computed_values = compute_values(data_set, 0) # For the first iteration we consider var_systematic = 0
+                    computed_values = compute_values(data_set, 0.) # For the first iteration we consider var_systematic = 0
                     data_store['mass='+f'{Mass_cut:.1e}']['ngrid='+str(ngrid)]['iteration='+str(it+1)] = {
                         'dx': L / ngrid,
                         'Variance(beta)': computed_values['variance_beta_final'],
                         'beta[sum(w beta)/sum(w)]': computed_values['beta_final_way1'],
                         'beta[sum(xy)/sum(x^2)]': computed_values['beta_final_way2'],
                         'alpha[sum(alpha)/n]': computed_values['mean_alpha_final'],
-                        'Variance(alpha)': computed_values['var_alpha_final']
+                        'Variance(alpha)': computed_values['var_alpha_final'],
+                        'variance_sys': computed_values['variance_sys']
                     }
                 else:
-                    variance_tot = computed_values['variance_beta_final']; # Previous variance!
-                    computed_values = compute_values(data_set, variance_tot) # For the first iteration we consider var_systematic = 0
+                    variance_sys = computed_values['variance_sys']; # Previous variance!
+                    computed_values = compute_values(data_set, variance_sys) # For the first iteration we consider var_systematic = 0
                     data_store['mass='+f'{Mass_cut:.1e}']['ngrid='+str(ngrid)]['iteration='+str(it+1)] = {
                         'dx': L / ngrid,
                         'Variance(beta)': computed_values['variance_beta_final'],
                         'beta[sum(w beta)/sum(w)]': computed_values['beta_final_way1'],
                         'beta[sum(xy)/sum(x^2)]': computed_values['beta_final_way2'],
                         'alpha[sum(alpha)/n]': computed_values['mean_alpha_final'],
-                        'Variance(alpha)': computed_values['var_alpha_final']
+                        'Variance(alpha)': computed_values['var_alpha_final'],
+                        'variance_sys': computed_values['variance_sys']
                     }
 
             # Update progress bar
@@ -104,8 +139,8 @@ def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_p
                 remove_files(save_path, spec, sim, Mass_cut, ngrid);
         # Close progress bar
         progress_bar.close()
-    
-    metadata = data_set['metadata']    
+
+    metadata = data_set['metadata'];
     save_data_final(save_path, spec, sim, Mass_cut, metadata, data_store)
 
 def load_xy_data_ngrid(save_path, spec, sim, Mass_cut, ngrid): ### Saving data
@@ -122,9 +157,12 @@ def load_xy_data_ngrid(save_path, spec, sim, Mass_cut, ngrid): ### Saving data
     directory = save_path+"/"+f'{Mass_cut:.1e}'
     file_name = f'data_correlations_{spec}_sim_{sim}_mass_{Mass_cut:.1e}_ngrid_{ngrid}.pickle'
     file_path = os.path.join(directory, file_name)
-
-    with open(file_path, 'rb') as handle:
-        loaded_data = pickle.load(handle)
+    try:
+        with open(file_path, 'rb') as handle:
+            loaded_data = pickle.load(handle)
+    except FileNotFoundError:
+        loaded_data = None  # or loaded_data = [] for an empty array
+    
     return loaded_data
 
 import os
@@ -152,10 +190,7 @@ def remove_files(save_path, spec, sim, Mass_cut, ngrid):
     except Exception as e:
         print(f"An error occurred while removing the file '{file_path}': {str(e)}")
 
-
-
-
-def compute_values(data_set, variance_tot):
+def compute_values(data_set, variance_sys):
     """
     Compute various statistical values (regression) from the given data_set.
 
@@ -165,7 +200,6 @@ def compute_values(data_set, variance_tot):
     Returns:
     - dict: Dictionary containing computed statistical values.
     """
-
     x_dot_y = 0.
     x_dot_x = 0.
     sum_w_ijk = 0.
@@ -173,22 +207,51 @@ def compute_values(data_set, variance_tot):
     mean_alpha_final = 0.
     mean_alpha_final_old = 0.
     var_alpha_final = 0.
-    variance_sys = variance_tot/(len(data_set['data'])) # we estimate the systematic variance by the sample variance, using the variance found in the previous iteration! variance_sys = variance_tot/number of sub-boxes
+    ### First round would be to compute mu! I decided not to do it through online algorithm as it might become complicated to implement and derive the equation!
+    n_h_threshold = 3
     for sub_box_index in data_set['data']:
         sub_box_data = data_set['data'][sub_box_index]
-        x_dot_y += sub_box_data['x_dot_y']
-        x_dot_x += sub_box_data['x_dot_x']
-        w_ijk = 1. / (sub_box_data['variance_b'] + variance_sys) # variance_sys is the systematic part which is going to be find through iteration!
-        sum_w_ijk += w_ijk # W_n = W_n-1 + w_ijk and W_n is Sum_i=1^n w_i
-        sum_beta_w_ijk += (w_ijk * sub_box_data['b'])
-        mean_alpha_final_old = mean_alpha_final;
-        mean_alpha_final = mean_alpha_final + (w_ijk/sum_w_ijk) * (sub_box_data['alpha'] - mean_alpha_final)
-        var_alpha_final = var_alpha_final + (w_ijk/sum_w_ijk) * ( (sub_box_data['alpha'] - mean_alpha_final) * (sub_box_data['alpha'] - mean_alpha_final_old) - var_alpha_final)
+        if sub_box_data['n_h'] >= n_h_threshold:
+            x_dot_y += sub_box_data['x_dot_y']
+            x_dot_x += sub_box_data['x_dot_x']
+            w_ijk = 1. / (sub_box_data['variance_b'] + variance_sys) # variance_sys is the systematic part which is going to be find through iteration!
+            sum_w_ijk += w_ijk # W_n = W_n-1 + w_ijk and W_n is Sum_i=1^n w_i
+            sum_beta_w_ijk += (w_ijk * sub_box_data['b'])
+            mean_alpha_final_old = mean_alpha_final;
+            mean_alpha_final = mean_alpha_final + (w_ijk/sum_w_ijk) * (sub_box_data['alpha'] - mean_alpha_final)
+            var_alpha_final = var_alpha_final + (w_ijk/sum_w_ijk) * ( (sub_box_data['alpha'] - mean_alpha_final) * (sub_box_data['alpha'] - mean_alpha_final_old) - var_alpha_final)
 
     variance_beta_final = 1. / sum_w_ijk
     beta_final_way1 = sum_beta_w_ijk / sum_w_ijk
     beta_final_way2 = x_dot_y / x_dot_x
+    
+    ####### Round two of loops
+    mu = beta_final_way1;
+    sum_w_ijk_squared =0.;
+    sum_w_ijk =0.;
+    sum_term_beta_w_squared = 0.;
+    sum_term = 0.;
+    for sub_box_index in data_set['data']:
+        sub_box_data = data_set['data'][sub_box_index]
+        if sub_box_data['n_h'] >= n_h_threshold:
+            #############
+            w_ijk = 1. / (sub_box_data['variance_b'] + variance_sys) # variance_sys is the systematic part which is going to be find through iteration!
+            w_ijk_squared = w_ijk**2 # variance_sys is the systematic part which is going to be find through iteration!
+            w_ijk_cubed = 1. / (sub_box_data['variance_b'] + variance_sys)**3 # variance_sys is the systematic part which is going to be find through iteration!
+            sum_term += ((sub_box_data['b'] - mu)**2 - sub_box_data['variance_b'])*w_ijk_squared
+            # sum_term_beta_w_squared += (sub_box_data['b'] - mu)**2 * w_ijk_squared;
+            # sum_term_beta_w_cubed += (sub_box_data['b'] - mu)**2 * w_ijk_cubed;
+            # sum_w_ijk += w_ijk # W_n = W_n-1 + w_ijk and W_n is Sum_i=1^n w_i
+            
+            sum_w_ijk_squared += w_ijk_squared # W_n = W_n-1 + w_ijk and W_n is Sum_i=1^n w_i
 
+    # deltaX = (sum_w_ijk - sum_term_beta_w_squared)/(sum_w_ijk_squared - 2.0 * sum_term_beta_w_cubed) # delta sigma_s^2 = sigma_s^2(n+1) - sigma_s^2(n)
+    # variance_sys = variance_sys + deltaX
+    # variance_sys = sum_term/sum_w_ijk_squared;
+    variance_sys = sum_term/sum_w_ijk_squared;
+    if variance_sys< 0:
+        variance_sys = 0.;
+    
     return {
         'variance_beta_final': variance_beta_final,
         'beta_final_way1': beta_final_way1,
@@ -240,7 +303,7 @@ def test_computation():
     print("Data being tested:")
     print(sub_boxes)
     # Call the computation function
-    result = compute_values(sub_boxes)
+    result = compute_values(sub_boxes, 0)
         
     # Define expected results
     expected_variance_beta = np.array([0.19, 0.08, 0.19])
