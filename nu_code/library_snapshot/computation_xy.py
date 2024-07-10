@@ -16,10 +16,10 @@ def nested_dict(n, type): # definingnested dictionary!
     else:
         return defaultdict(lambda: nested_dict(n-1, type))
 
-def compute_regression(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num=1, run_tests=False, remove_extra_files=False):
+def compute_regression(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num=1,  n_h_threshold=3, run_tests=False, remove_extra_files=False):
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
-
+    
     # Get the total number of processes
     size = comm.Get_size()
 
@@ -36,7 +36,8 @@ def compute_regression(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, 
 
         if rank == 0:
             # Run compute_regression_func only on the process with rank 0
-            compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, run_tests, remove_extra_files)
+            print("Computing with n_h_threshold = "+ str(n_h_threshold))
+            compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, n_h_threshold, run_tests, remove_extra_files)
 
         # Barrier to ensure all processes finish before continuing
         comm.Barrier()
@@ -48,7 +49,7 @@ def compute_regression(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, 
             print("compute_regression finished successfully.")
     else:
         # If only 1 process, simply call compute_regression_func
-        compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, run_tests, remove_extra_files)
+        compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, n_h_threshold, run_tests, remove_extra_files)
 
 # def compute_regression(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num=1, run_tests=False, remove_extra_files=False):
 #     comm = MPI.COMM_WORLD
@@ -75,7 +76,7 @@ def compute_regression(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, 
 #     if rank == 0:
 #         print("compute_regression finished successfully.")
 
-def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, run_tests, remove_extra_files):
+def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, n_h_threshold,  run_tests, remove_extra_files):
     """
     Final analysis function.
     Parameters:
@@ -110,7 +111,7 @@ def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_p
             data_set = load_xy_data_ngrid(save_path, spec, sim, Mass_cut, ngrid)
             for it in range(iteration_num):
                 if it==0:
-                    computed_values = compute_values(data_set, 0.) # For the first iteration we consider var_systematic = 0
+                    computed_values = compute_values(data_set, 0., n_h_threshold) # For the first iteration we consider var_systematic = 0
                     data_store['mass='+f'{Mass_cut:.1e}']['ngrid='+str(ngrid)]['iteration='+str(it+1)] = {
                         'dx': L / ngrid,
                         'Variance(beta)': computed_values['variance_beta_final'],
@@ -122,7 +123,7 @@ def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_p
                     }
                 else:
                     variance_sys = computed_values['variance_sys']; # Previous variance!
-                    computed_values = compute_values(data_set, variance_sys) # For the first iteration we consider var_systematic = 0
+                    computed_values = compute_values(data_set, variance_sys, n_h_threshold) # For the first iteration we consider var_systematic = 0
                     data_store['mass='+f'{Mass_cut:.1e}']['ngrid='+str(ngrid)]['iteration='+str(it+1)] = {
                         'dx': L / ngrid,
                         'Variance(beta)': computed_values['variance_beta_final'],
@@ -161,9 +162,32 @@ def load_xy_data_ngrid(save_path, spec, sim, Mass_cut, ngrid): ### Saving data
         with open(file_path, 'rb') as handle:
             loaded_data = pickle.load(handle)
     except FileNotFoundError:
-        loaded_data = None  # or loaded_data = [] for an empty array
+        print("The file "+file_name+" doesn't exist!")
+        # loaded_data = None  # or loaded_data = [] for an empty array
     
     return loaded_data
+
+def check_file_exist(save_path, spec, sim, Mass_cut, ngrid): ### Saving data
+    """
+    loading data for each ngrid data.
+
+    Parameters:
+    - save_path (str): Path to save the data.
+    - spec (str): Specification identifier.
+    - sim (str): Simulation identifier.
+    - Mass_cut (float): Mass cut value.
+    - data_store (dict): Data to save.
+    """
+    directory = save_path+"/"+f'{Mass_cut:.1e}'
+    file_name = f'data_correlations_{spec}_sim_{sim}_mass_{Mass_cut:.1e}_ngrid_{ngrid}.pickle'
+    file_path = os.path.join(directory, file_name)
+    try:
+        with open(file_path, 'rb') as handle:
+            loaded_data = pickle.load(handle)
+    except FileNotFoundError:
+        print("The file "+file_name+" doesn't exist!")
+    return
+
 
 import os
 
@@ -190,7 +214,7 @@ def remove_files(save_path, spec, sim, Mass_cut, ngrid):
     except Exception as e:
         print(f"An error occurred while removing the file '{file_path}': {str(e)}")
 
-def compute_values(data_set, variance_sys):
+def compute_values(data_set, variance_sys, n_h_threshold):
     """
     Compute various statistical values (regression) from the given data_set.
 
@@ -208,7 +232,7 @@ def compute_values(data_set, variance_sys):
     mean_alpha_final_old = 0.
     var_alpha_final = 0.
     ### First round would be to compute mu! I decided not to do it through online algorithm as it might become complicated to implement and derive the equation!
-    n_h_threshold = 3
+    # n_h_threshold = 3
     for sub_box_index in data_set['data']:
         sub_box_data = data_set['data'][sub_box_index]
         if sub_box_data['n_h'] >= n_h_threshold:
@@ -221,9 +245,9 @@ def compute_values(data_set, variance_sys):
             mean_alpha_final = mean_alpha_final + (w_ijk/sum_w_ijk) * (sub_box_data['alpha'] - mean_alpha_final)
             var_alpha_final = var_alpha_final + (w_ijk/sum_w_ijk) * ( (sub_box_data['alpha'] - mean_alpha_final) * (sub_box_data['alpha'] - mean_alpha_final_old) - var_alpha_final)
 
-    variance_beta_final = 1. / sum_w_ijk
-    beta_final_way1 = sum_beta_w_ijk / sum_w_ijk
-    beta_final_way2 = x_dot_y / x_dot_x
+    variance_beta_final = 1. / sum_w_ijk;
+    beta_final_way1 = sum_beta_w_ijk / sum_w_ijk;
+    beta_final_way2 = x_dot_y / x_dot_x;
     
     ####### Round two of loops
     mu = beta_final_way1;
@@ -242,15 +266,14 @@ def compute_values(data_set, variance_sys):
             # sum_term_beta_w_squared += (sub_box_data['b'] - mu)**2 * w_ijk_squared;
             # sum_term_beta_w_cubed += (sub_box_data['b'] - mu)**2 * w_ijk_cubed;
             # sum_w_ijk += w_ijk # W_n = W_n-1 + w_ijk and W_n is Sum_i=1^n w_i
-            
             sum_w_ijk_squared += w_ijk_squared # W_n = W_n-1 + w_ijk and W_n is Sum_i=1^n w_i
 
     # deltaX = (sum_w_ijk - sum_term_beta_w_squared)/(sum_w_ijk_squared - 2.0 * sum_term_beta_w_cubed) # delta sigma_s^2 = sigma_s^2(n+1) - sigma_s^2(n)
     # variance_sys = variance_sys + deltaX
     # variance_sys = sum_term/sum_w_ijk_squared;
     variance_sys = sum_term/sum_w_ijk_squared;
-    if variance_sys< 0:
-        variance_sys = 0.;
+    variance_sys[variance_sys < 0] = 0;
+
     
     return {
         'variance_beta_final': variance_beta_final,
