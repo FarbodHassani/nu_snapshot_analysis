@@ -27,7 +27,7 @@ cosmology.setCosmology('planck18');
 ## Functions
 #############
 
-def perform_analysis(sims, specs, Mass_cuts, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, num_cores=1, cdm_analysis=False, nu_analysis=False):
+def perform_analysis(sims, specs, Mass_cuts, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo=1., num_cores=1, cdm_analysis=False, nu_analysis=False):
     """
     Main function to perform analysis for different combinations of simulation parameters.
     Parameters:
@@ -88,7 +88,7 @@ def perform_analysis(sims, specs, Mass_cuts, L, ngrid_max, halo_dir, save_path, 
         sim = sims[sim_index]
 
         # Perform analysis for the current combination
-        analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, cdm_analysis, nu_analysis)
+        analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo, cdm_analysis, nu_analysis)
 
     # Wait for all processes to complete
     comm.Barrier()
@@ -296,7 +296,7 @@ def load_halo_data(halo_dir, spec, sim, Mass_cut):
     ratio_number_halos = np.shape(masses)[0]/np.shape(mass_conditions)[0];
     return pos_halos, vel_halos, masses, biases, ratio_number_halos
 
-def analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, cdm_analysis=False, nu_analysis=False):
+def analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo=1., cdm_analysis=False, nu_analysis=False):
     """
     Main analysis function which goes through a list of ngrids and print out the sub-boxes and the important information for each ngrid and save it as a file!
 
@@ -324,10 +324,10 @@ def analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, n
     # Analyze data for each ngrid
     for ngrid in ngrid_list:
         # Prepare metadata
-        metadata = prepare_metadata(spec, sim, Mass_cut, ratio_number_halos, halo_dir, L, ngrid, cdm_analysis, nu_analysis)
-        analyze_ngrid(ngrid,  save_path, metadata, spec, sim, L, Mass_cut, pos_halos, vel_halos, masses, biases, cdm_analysis, nu_analysis)
+        metadata = prepare_metadata(spec, sim, Mass_cut, ratio_number_halos, halo_dir, L, ngrid, coeff_halo, cdm_analysis, nu_analysis)
+        analyze_ngrid(ngrid,  save_path, metadata, spec, sim, L, Mass_cut, pos_halos, vel_halos, masses, biases, coeff_halo, cdm_analysis, nu_analysis)
 
-def prepare_metadata(spec, sim, Mass_cut, ratio_number_halos, halo_dir, L, ngrid, cdm_analysis, nu_analysis):
+def prepare_metadata(spec, sim, Mass_cut, ratio_number_halos, halo_dir, L, ngrid, coeff_halo, cdm_analysis, nu_analysis):
     """
     Prepare metadata for the analysis.
 
@@ -353,6 +353,7 @@ def prepare_metadata(spec, sim, Mass_cut, ratio_number_halos, halo_dir, L, ngrid
         'halo_directory': halo_dir,
         'boxsize': L,
         'ngrid': ngrid,
+        'coeff(v_nu - v_h/coeff)': coeff_halo,
         'adding bulk velocity of cdm:':cdm_analysis,
         'adding bulk velocity of neutrinos:':nu_analysis,
         'x_description_list': x_description_list
@@ -360,7 +361,7 @@ def prepare_metadata(spec, sim, Mass_cut, ratio_number_halos, halo_dir, L, ngrid
     return metadata
 
 
-def analyze_ngrid(ngrid, save_path, metadata, spec, sim, L, Mass_cut, pos_halos, vel_halos, masses, biases, cdm_analysis, nu_analysis):
+def analyze_ngrid(ngrid, save_path, metadata, spec, sim, L, Mass_cut, pos_halos, vel_halos, masses, biases, coeff_halo, cdm_analysis, nu_analysis):
     """
     Analyze data for a specific ngrid.
     Parameters:
@@ -401,7 +402,7 @@ def analyze_ngrid(ngrid, save_path, metadata, spec, sim, L, Mass_cut, pos_halos,
         condition_sub_box = np.all((index_pos == sub_box_index), axis=1)
         n_h = np.sum(condition_sub_box);
         if n_h > 2: # n_h must be larger than 2, based on definition of variance and the fact that we need 3 points to compute in regression!
-            x_dot_y, x_dot_x, b, alpha, Variance_beta, n_h = analyze_sub_box(sub_box_index, condition_sub_box, ngrid, sim, spec, Mass_cut, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, vel_halos, masses, biases, n_h, cdm_analysis, nu_analysis)
+            x_dot_y, x_dot_x, b, alpha, Variance_beta, n_h = analyze_sub_box(sub_box_index, condition_sub_box, ngrid, sim, spec, Mass_cut, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, vel_halos, masses, biases, coeff_halo, n_h, cdm_analysis, nu_analysis)
             
             # Store sub-box specific data
             sub_box_data[tuple(sub_box_index)] = {
@@ -416,7 +417,7 @@ def analyze_ngrid(ngrid, save_path, metadata, spec, sim, L, Mass_cut, pos_halos,
     sub_box_data.clear()
     
 
-def analyze_sub_box(sub_box_index, condition_sub_box, ngrid, sim, spec, Mass_cut, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, vel_halos, masses, biases, n_h, cdm_analysis, nu_analysis):
+def analyze_sub_box(sub_box_index, condition_sub_box, ngrid, sim, spec, Mass_cut, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, vel_halos, masses, biases, coeff_halo, n_h, cdm_analysis, nu_analysis):
     """
     Analyze data for a specific sub-box.
 
@@ -438,17 +439,17 @@ def analyze_sub_box(sub_box_index, condition_sub_box, ngrid, sim, spec, Mass_cut
     - nu_analysis (bool): Whether to add bulk velocities of nu particles.
     """
     # Extract data for the specified sub-box
-    vel_halos_subBox, v_h_cell, mass, bias_h, f_h, f_h_avg, f_dot_v_h_average, v_c_cell, v_ch_cell, v_nu_cell, v_cnu_cell, v_nuh_cell, v_nuh2_i =  extract_sub_box_data(sim, sub_box_index, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, condition_sub_box, vel_halos, masses, biases, cdm_analysis, nu_analysis)
+    vel_halos_subBox, v_h_cell, mass, bias_h, f_h, f_h_avg, f_dot_v_h_average, v_c_cell, v_ch_cell, v_nu_cell, v_cnu_cell, v_nuh_cell, v_nuh2_i =  extract_sub_box_data(sim, sub_box_index, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, condition_sub_box, vel_halos, masses, biases, coeff_halo, cdm_analysis, nu_analysis)
         
     # Compute x_i and x_i_avg lists along with their descriptions
-    x_i_list, x_i_avg_list = compute_x_lists(f_h, f_h_avg, f_dot_v_h_average, v_nuh_cell, v_nuh2_i, v_c_cell, v_h_cell, v_ch_cell, v_cnu_cell, cdm_analysis, nu_analysis)
+    x_i_list, x_i_avg_list = compute_x_lists(f_h, f_h_avg, f_dot_v_h_average, v_nuh_cell, v_nuh2_i, v_c_cell, v_h_cell, v_ch_cell, v_cnu_cell, coeff_halo, cdm_analysis, nu_analysis)
 
     # Compute regression parameters and variance
     x_dot_y, x_dot_x, b, alpha, Variance_beta = compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell, n_h) 
 
     return x_dot_y, x_dot_x, b, alpha, Variance_beta, n_h
 
-def extract_sub_box_data(sim, sub_box_index, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, condition_sub_box, vel_halos, masses, biases, cdm_analysis, nu_analysis):
+def extract_sub_box_data(sim, sub_box_index, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, condition_sub_box, vel_halos, masses, biases, coeff_halo, cdm_analysis, nu_analysis):
     """
     Extract data relevant to the specified sub-box.
 
@@ -484,15 +485,15 @@ def extract_sub_box_data(sim, sub_box_index, cdm_bulk_all, nu_bulk_all, halo_bul
 
     if cdm_analysis:
         v_c_cell = cdm_bulk_all['sub_box_data'][tuple(sub_box_index)]['sum_bulk_vel']/cdm_bulk_all['sub_box_data'][tuple(sub_box_index)]['N']
-        v_ch_cell = v_c_cell - v_h_cell/2.
+        v_ch_cell = v_c_cell - v_h_cell #v_c_cell - v_h_cell/2.
 
     if nu_analysis:
         if sim != "0.0ev":
             v_nu_cell = nu_bulk_all['sub_box_data'][tuple(sub_box_index)]['sum_bulk_vel']/nu_bulk_all['sub_box_data'][tuple(sub_box_index)]['N']
         else:
             v_nu_cell = np.array([0.,0.,0.])
-        v_nuh_cell = v_nu_cell - v_h_cell/2.
-        v_nuh2_i = v_nu_cell - vel_halos_subBox/2.
+        v_nuh_cell = v_nu_cell - v_h_cell/coeff_halo
+        v_nuh2_i = v_nu_cell - vel_halos_subBox/coeff_halo
         
     if nu_analysis and cdm_analysis:        
         v_cnu_cell = v_c_cell - v_nu_cell
@@ -560,7 +561,7 @@ def compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell
 
 
 
-def compute_x_lists(f_h, f_h_avg, f_dot_v_h_average, v_nuh_cell, v_nuh2_i, v_c_cell, v_h_cell, v_ch_cell, v_cnu_cell, cdm_analysis, nu_analysis):
+def compute_x_lists(f_h, f_h_avg, f_dot_v_h_average, v_nuh_cell, v_nuh2_i, v_c_cell, v_h_cell, v_ch_cell, v_cnu_cell, coeff_halo, cdm_analysis, nu_analysis):
     """
     Compute lists of x_i and x_i_avg.
 
@@ -593,7 +594,7 @@ def compute_x_lists(f_h, f_h_avg, f_dot_v_h_average, v_nuh_cell, v_nuh2_i, v_c_c
     if cdm_analysis:
         x_i_list.append(f_h * v_ch_cell)
         x_i_avg_list.append(f_h_avg * v_ch_cell)
-        # x_description_list.append("x_i = f(b_i, M_i) <v_cdm> - <v_h>/2")
+        # x_description_list.append("x_i = f(b_i, M_i) <v_cdm> - <v_h>/coeff")
 
         x_i_list.append(f_h * v_c_cell)
         x_i_avg_list.append(f_h_avg * v_c_cell)
@@ -602,11 +603,11 @@ def compute_x_lists(f_h, f_h_avg, f_dot_v_h_average, v_nuh_cell, v_nuh2_i, v_c_c
     if nu_analysis:
         x_i_list.append(f_h * v_nuh_cell)
         x_i_avg_list.append(f_h_avg * v_nuh_cell)
-        # x_description_list.append("x_i = f(b_i, M_i) <v_nu> - <v_h>/2")
+        # x_description_list.append("x_i = f(b_i, M_i) <v_nu> - <v_h>/coeff")
         
         x_i_list.append(f_h * v_nuh2_i)
-        x_i_avg_list.append(f_h_avg * v_nuh_cell - f_dot_v_h_average / 2.)
-        # x_description_list.append("x_i = f(b_i, M_i)(v_nu_cell - v_h^i/2.)")
+        x_i_avg_list.append(f_h_avg * v_nuh_cell - f_dot_v_h_average / coeff_halo)
+        # x_description_list.append("x_i = f(b_i, M_i)(v_nu_cell - v_h^i/coeff)")
         
     if nu_analysis and cdm_analysis:
         x_i_list.append(f_h * v_cnu_cell)
@@ -630,12 +631,12 @@ def x_lists_description(cdm_analysis, nu_analysis):
     x_description_list.append("x_i = f(b_i, M_i) <v_h>")
     
     if cdm_analysis:
-        x_description_list.append("x_i = f(b_i, M_i) <v_cdm> - <v_h>/2")
+        x_description_list.append("x_i = f(b_i, M_i) <v_cdm> - <v_h>/coeff")
         x_description_list.append("x_i = f(b_i, M_i) <v_cdm>")
 
     if nu_analysis:
-        x_description_list.append("x_i = f(b_i, M_i) <v_nu> - <v_h>/2")
-        x_description_list.append("x_i = f(b_i, M_i)(v_nu_cell - v_h^i/2.)")
+        x_description_list.append("x_i = f(b_i, M_i) <v_nu> - <v_h>/coeff")
+        x_description_list.append("x_i = f(b_i, M_i)(v_nu_cell - v_h^i/coeff)")
         
     if nu_analysis and cdm_analysis:
         x_description_list.append("x_i = f(b_i, M_i) <v_cdm> - <v_nu>")
