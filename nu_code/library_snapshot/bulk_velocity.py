@@ -114,6 +114,7 @@ def compute_metadata(boxsize, Num_pcl_sim, sim_type, ngrid, ngrid_min, ngrid_max
 # Function to process halo data
 def process_halo_data(rank, file_path, mass_limit, coeff, sub_box_data):
     pos, vel, masses = load_data_halo(file_path, mass_limit)
+    print(np.shape(masses), np.shape(pos))
     for pcl in range(np.shape(pos)[0]):
         x_index = int(np.floor(pos[pcl, 0] * coeff))
         y_index = int(np.floor(pos[pcl, 1] * coeff))
@@ -198,7 +199,7 @@ def process_data_JD(rank, bulk_species, sim_type, mass_limit, file_path, coeff, 
                 a = 1.
                 file_data = ReadHaloFile_lcdm(input_file, a)  # Assuming ReadHaloFile_lcdm is the function to read JD data
                 cond = (file_data[6] >= mass_limit)
-                masses = file_data[6]
+                masses = file_data[6][cond]
                 pos = np.vstack((file_data[0][cond], file_data[1][cond], file_data[2][cond])).T
                 vel = np.vstack((file_data[3][cond], file_data[4][cond], file_data[5][cond])).T
             else:
@@ -206,7 +207,7 @@ def process_data_JD(rank, bulk_species, sim_type, mass_limit, file_path, coeff, 
                 a = 1.
                 file_data = ReadHaloFile_data(input_file, a)  # Assuming ReadHaloFile_data is the function to read JD data
                 cond = (file_data[6] >= mass_limit)
-                masses = file_data[6]
+                masses = file_data[6][cond]
                 pos = np.vstack((file_data[0][cond], file_data[1][cond], file_data[2][cond])).T
                 vel = np.vstack((file_data[3][cond], file_data[4][cond], file_data[5][cond])).T
             for pcl in range(np.shape(pos)[0]):
@@ -268,7 +269,7 @@ def load_data_halo(sim_path, mass_limit=1):
     mass =  halo_all[:,6]
     return pos, vel, mass # return the loaded particles or halo data
 
-def load_data_JD_all(bulk_species, sim_path, mass_limit=1, ranknum=512):
+def load_data_JD_all(bulk_species, sim_path, mass_limit=1, ranknum=2):
     # particles read
     pos_data = []
     vel_data = []

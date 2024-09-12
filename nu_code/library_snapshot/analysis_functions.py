@@ -15,7 +15,7 @@ from colossus.lss import peaks
 from colossus.lss import bias
 from colossus.cosmology import cosmology
 cosmology.setCosmology('planck18');
-
+from library_snapshot import computation_xy
 
 #### Here we compute  $\frac{\langle(\vec v_h - \vec v_{bulk}).(b_h + (\frac{M_h}{1.3 \times 10^{14}})^{0.85})\vec v_{bulk} \rangle}{\langle x.x\rangle}, x =(b_h + (\frac{M_h}{1.3 \times 10^{14}})^{0.85})\vec v_{bulk} $ where $\vec v_{bulk}$ is the bulk velocity which can be computed from different quantities $v_{nu}$, $v_h$ with a certain mass cut and etc and $\vec v_h$ is the halo velocity and $x^i$ contains halo mass, bias and its velocity information and then we save the files in a directory
 
@@ -27,7 +27,7 @@ cosmology.setCosmology('planck18');
 ## Functions
 #############
 
-def perform_analysis(sims, specs, Mass_cuts, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo=1., num_cores=1, cdm_analysis=False, nu_analysis=False):
+def perform_analysis(sims, specs, Mass_cuts, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo=1., num_cores=1, cdm_analysis=False, nu_analysis=False, n_h_threshold = 3):
     """
     Main function to perform analysis for different combinations of simulation parameters.
     Parameters:
@@ -88,215 +88,12 @@ def perform_analysis(sims, specs, Mass_cuts, L, ngrid_max, halo_dir, save_path, 
         sim = sims[sim_index]
 
         # Perform analysis for the current combination
-        analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo, cdm_analysis, nu_analysis)
+        analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold)
 
     # Wait for all processes to complete
     comm.Barrier()
 
-
-def convert_mass_cuts(Mass_cuts):
-    """
-    Convert mass cuts into variable names.
-
-    Parameters:
-    - Mass_cuts (list): List of mass cuts.
-
-    Returns:
-    - halo_masses (list): List of variable names for each mass cut.
-    """
-    halo_masses = []
-    for mass_cut in Mass_cuts:
-        notation = "{:.0e}".format(mass_cut)
-        power, exponent = notation.split('e')
-        if exponent.startswith('+'):
-            exponent = exponent[1:]  # Remove the leading '+' symbol
-        var_name = f"halo_mass_{power}e{exponent}"
-        halo_masses.append(var_name)
-    return halo_masses
-
-def load_data_bulk(file_path, ngrid, sim, spec, Mass_cut, cdm_analysis=False, nu_analysis=False):  ### Loading the bulk velocities
-    """
-    Load data.
-    Parameters:
-    - file_path (str): Path to the data files.
-    - ngrid (int): Number of grid points.
-    - sim (str): Simulation identifier.
-    - spec (str): Specification identifier.
-    - Mass_cut (float): Mass cut value.
-    - cdm_analysis (bool): Whether to add bulk velocities of cdm particles.
-    - nu_analysis (bool): Whether to add bulk velocities of nu particles.
-    Returns:
-    - cdm_bulk_all, nu_bulk_all, halo_bulk_all: Loaded data.
-    - Data based on analysis selection.
-
-    """
-    if spec=="L_500_Ngrid_6144":
-        halo_all_path = f"{file_path}/{convert_mass_cuts([Mass_cut])[0]}/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_halo.pickle"
-        cdm_path = f"{file_path}/cdm/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_cdm.pickle"
-        nu_path = f"{file_path}/nu/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_nu.pickle" if sim != "0.0ev" else ""
-    else:
-        cdm_path = f"{file_path}/cdm/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_snap002_cdm.pickle"
-        nu_path = f"{file_path}/nu/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_snap002_ncdm0.pickle" if sim != "0.0ev" else ""
-        halo_all_path = f"{file_path}/{convert_mass_cuts([Mass_cut])[0]}/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_halos_out_2.pickle"
-        
-    
-    for path in [cdm_path, nu_path] if cdm_analysis or nu_analysis else []:
-        if path and not os.path.exists(path):
-            print(f"Warning: {path} doesn't exist.")
-            
-    # Load the data if the files exist
-    cdm_bulk_all = np.load(cdm_path, allow_pickle=True) if cdm_analysis and os.path.exists(cdm_path) else None
-    nu_bulk_all = np.load(nu_path, allow_pickle=True) if nu_analysis and os.path.exists(nu_path) and sim != "0.0ev" else None
-    halo_bulk_all = np.load(halo_all_path, allow_pickle=True)
-    if not cdm_analysis and not nu_analysis:
-        return halo_bulk_all
-        
-    elif cdm_analysis and not nu_analysis:
-        return cdm_bulk_all, halo_bulk_all
-        
-    elif not cdm_analysis and nu_analysis:
-        return nu_bulk_all, halo_bulk_all
-        
-    elif cdm_analysis and nu_analysis:
-        return cdm_bulk_all, nu_bulk_all, halo_bulk_all
-
-
-def save_data(save_path, spec, sim, Mass_cut, ngrid, metadata, data_store): ### Saving data
-    """
-    Save data.
-
-    Parameters:
-    - save_path (str): Path to save the data.
-    - spec (str): Specification identifier.
-    - sim (str): Simulation identifier.
-    - Mass_cut (float): Mass cut value.
-    - metadata (dict): Metadata.
-    - data_store (dict): Data to save.
-    """
-    directory = save_path
-    if not os.path.exists(directory):
-        os.makedirs(directory)
-    
-    directory = save_path+"/"+f'{Mass_cut:.1e}'
-    if not os.path.exists(directory):
-        os.makedirs(directory)
-        
-    data_to_save = {
-        'metadata': metadata,
-        'data': data_store
-    }
-    file_name = f'data_correlations_{spec}_sim_{sim}_mass_{Mass_cut:.1e}_ngrid_{ngrid}.pickle'
-    file_path = os.path.join(directory, file_name)
-
-    with open(file_path, 'wb') as handle:
-        pickle.dump(data_to_save, handle)
-
-def load_all_xy_data(save_path, spec, sim, Mass_cut, ngrid): ### Saving data
-    """
-    loading data for each ngrid data.
-
-    Parameters:
-    - save_path (str): Path to save the data.
-    - spec (str): Specification identifier.
-    - sim (str): Simulation identifier.
-    - Mass_cut (float): Mass cut value.
-    - data_store (dict): Data to save.
-    """
-    directory = save_path+"/"+f'{Mass_cut:.1e}'
-    file_name = f'data_correlations_{spec}_sim_{sim}_mass_{Mass_cut:.1e}_ngrid_{ngrid}.pickle'
-    file_path = os.path.join(directory, file_name)
-
-    with open(file_path, 'rb') as handle:
-        loaded_data = pickle.load(handle)
-    return loaded_data
-    
-def load_halo_data_JD(halo_dir, spec, sim, Mass_cut, rank_total=512):
-    """
-    Load halo data using the JD method.
-
-    Parameters:
-    - rank_total (int): Total number of ranks.
-    - halo_dir (str): Directory path of the halo data.
-    - sim (str): Simulation identifier.
-    - Mass_cut (float): Mass cut value.
-
-    Returns:
-    - pos_halos (array): Positions of halos.
-    - vel_halos (array): Velocities of halos.
-    - masses (array): Masses of halos.
-    - biases (array): Biases of halos.
-    - ratio_number_halos (float): The ratio of the number of halos satisfying the mass cut 
-      to the total number of halos.
-      """
-    pos_data=[];vel_data=[];mass_data=[]; number_tot=0;
-    for rank_id in range(rank_total):
-        ### In the case of halos!
-        if sim=="0.0ev":
-            input_file =  halo_dir+"/"+sim+"/halos/0.000halo"+str(rank_id)+".dat"
-            a = 1.;
-            file_data = ReadHaloFile_lcdm(input_file, a)
-            number_tot += np.shape(file_data[6])[0];
-            mass_conditions = (file_data[6] >= Mass_cut)  
-            file_data = np.array(file_data).T[mass_conditions]
-            pos_data_add = file_data[:,:3]
-            vel_data_add = file_data[:,3:6]
-            mass_data_add =  file_data[:,6:7]
-            pos_data.append(pos_data_add)
-            vel_data.append(vel_data_add)
-            mass_data.append(mass_data_add)         
-        else:
-            input_file =  halo_dir+"/"+sim+"/halos/0.000halo"+str(rank_id)+".dat"
-            a = 1.;
-            file_data = ReadHaloFile_data(input_file, a)
-            number_tot += np.shape(file_data[6])[0];
-            mass_conditions = (file_data[6] >= Mass_cut)  # Assuming file_data[6] contains the values
-            file_data = np.array(file_data).T[mass_conditions]
-            pos_data_add = file_data[:,:3]
-            vel_data_add = file_data[:,3:6]
-            mass_data_add =  file_data[:,6:7]
-            pos_data.append(pos_data_add)
-            vel_data.append(vel_data_add)
-            mass_data.append(mass_data_add) 
-
-    pos_halos = np.vstack(pos_data)
-    vel_halos = np.vstack(vel_data)
-    masses = np.vstack(mass_data)
-    if np.shape(masses)[0] == 0:
-        print("ERROR: No halos found for the given mass cut")
-        return None;
-    biases = bias.haloBias(masses, model = 'sheth01', z = 0.0, mdef = '200m')
-    ratio_number_halos = np.shape(masses)[0]/number_tot;
-    return pos_halos, vel_halos, masses, biases, ratio_number_halos
-
-def load_halo_data(halo_dir, spec, sim, Mass_cut):
-    """
-    Load halo data.
-
-    Parameters:
-    - halo_dir (str): Directory path of the halo data.
-    - spec (str): Specification identifier.
-    - sim (str): Simulation identifier.
-    - Mass_cut (float): Mass cut value.
-
-    Returns:
-    - pos_halos (array): Positions of halos.
-    - vel_halos (array): Velocities of halos.
-    - masses (array): Masses of halos.
-    - biases (array): Biases of halos.
-    - ratio_number_halos (float): The ratio of the number of halos satisfying the mass cut 
-      to the total number of halos.
-    """
-    halo_cat = np.loadtxt(halo_dir+spec+"/"+sim+"/output/halos/out_2.list") # Loading the full halo catalogue to loop over each halo
-    mass_conditions = (halo_cat[:,20]>=Mass_cut)                
-    halo_cat = halo_cat[mass_conditions]  # applying the mass condition
-    pos_halos = halo_cat[:,8:11];
-    vel_halos = halo_cat[:,11:14];
-    masses = halo_cat[:,20];
-    biases = bias.haloBias(masses, model = 'sheth01', z = 0.0, mdef = '200m')
-    ratio_number_halos = np.shape(masses)[0]/np.shape(mass_conditions)[0];
-    return pos_halos, vel_halos, masses, biases, ratio_number_halos
-
-def analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo=1., cdm_analysis=False, nu_analysis=False):
+def analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold):
     """
     Main analysis function which goes through a list of ngrids and print out the sub-boxes and the important information for each ngrid and save it as a file!
 
@@ -310,6 +107,7 @@ def analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, n
     - save_path (str): Path to save the analyzed data.
     - ngrid_step (int): Step size for the grid points.
     - ngrid_list (list): List of grid points to analyze.
+    - n_h_threshold (int): min amount of halos in a sub-box which are going to enter the analysis 
     """
     
     # Load halo data based on simulation size (JD or FH)
@@ -320,48 +118,16 @@ def analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, n
 
     # Print analysis information
     print(f"The analysis is being done for Mass_cut: {Mass_cut:.2e}")
-    
+    if ((sim == "0.0ev") and  nu_analysis == True):
+        print("\033[38;5;214m warning: The neutrino analysis is requested while it's a non-neutrino run -- Automatically nu_analysis is set to False \033[0m")
+        nu_analysis = False;
     # Analyze data for each ngrid
     for ngrid in ngrid_list:
         # Prepare metadata
-        metadata = prepare_metadata(spec, sim, Mass_cut, ratio_number_halos, halo_dir, L, ngrid, coeff_halo, cdm_analysis, nu_analysis)
-        analyze_ngrid(ngrid,  save_path, metadata, spec, sim, L, Mass_cut, pos_halos, vel_halos, masses, biases, coeff_halo, cdm_analysis, nu_analysis)
+        metadata = prepare_metadata(spec, sim, Mass_cut, ratio_number_halos, halo_dir, L, ngrid, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold)
+        analyze_ngrid(ngrid,  save_path, metadata, spec, sim, L, Mass_cut, pos_halos, vel_halos, masses, biases, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold)
 
-def prepare_metadata(spec, sim, Mass_cut, ratio_number_halos, halo_dir, L, ngrid, coeff_halo, cdm_analysis, nu_analysis):
-    """
-    Prepare metadata for the analysis.
-
-    Parameters:
-    - spec (str): Specification identifier.
-    - sim (str): Simulation identifier.
-    - Mass_cut (float): Mass cut value.
-    - ratio_number_halos (float): The ratio of the number of halos satisfying the mass cut 
-      to the total number of halos.
-    - halo_dir (str): Directory path of the halo data.
-    - L (float): Box size.
-    - ngrid (int): Grid size.
-
-    Returns:
-    - metadata (dict): Metadata dictionary containing simulation information.
-    """
-    x_description_list = x_lists_description(cdm_analysis, nu_analysis)
-    metadata = {
-        'specification': spec,
-        'simulation': sim,
-        'mass_cut': f'{Mass_cut:.1e}',
-        'ratio_number_halos': ratio_number_halos,
-        'halo_directory': halo_dir,
-        'boxsize': L,
-        'ngrid': ngrid,
-        'coeff(v_nu - v_h/coeff)': coeff_halo,
-        'adding bulk velocity of cdm:':cdm_analysis,
-        'adding bulk velocity of neutrinos:':nu_analysis,
-        'x_description_list': x_description_list
-               }
-    return metadata
-
-
-def analyze_ngrid(ngrid, save_path, metadata, spec, sim, L, Mass_cut, pos_halos, vel_halos, masses, biases, coeff_halo, cdm_analysis, nu_analysis):
+def analyze_ngrid(ngrid, save_path, metadata, spec, sim, L, Mass_cut, pos_halos, vel_halos, masses, biases, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold):
     """
     Analyze data for a specific ngrid.
     Parameters:
@@ -375,6 +141,8 @@ def analyze_ngrid(ngrid, save_path, metadata, spec, sim, L, Mass_cut, pos_halos,
     - biases (array): Biases of halos.
     - cdm_analysis (bool): Whether to add bulk velocities of cdm particles.
     - nu_analysis (bool): Whether to add bulk velocities of nu particles.
+    - n_h_threshold (int): min amount of halos in a sub-box which are going to enter the analysis 
+
     """
     file_path = f"/mn/stornext/u3/hassanif/neutrino_niayesh/Analysis/Runs_bulk_all_sims/{spec}/{sim}"
     data_store = {}  # Dictionary to store ngrid_data data
@@ -395,24 +163,38 @@ def analyze_ngrid(ngrid, save_path, metadata, spec, sim, L, Mass_cut, pos_halos,
         halo_bulk_all = result
         
     index_pos = np.int64(pos_halos * ngrid / L)
-    index_pos_unique = np.unique(index_pos, axis=0);
+    ### Making a dictionary to avoid looping over halos for comparisons:
+    # the pre-built map for quick lookup
+    sub_box_halo_map ={}
+    for i, halo_index in enumerate(index_pos):
+        halo_tuple = tuple(halo_index)
+        if halo_tuple not in sub_box_halo_map:
+            sub_box_halo_map[halo_tuple] = []
+        sub_box_halo_map[halo_tuple].append(i)
+    ####
+    filtered_dict = {}
+    for sub_box_index, data in halo_bulk_all['sub_box_data'].items():
+        # print(sub_box_index)
+        if data['N']> n_h_threshold: # Only the sub-boxes that have minimum n_h_threshold halos are kept! 
+             # note that n_h must be larger than 2, based on definition of variance and the fact that we need 3 points to compute in regression!
+            filtered_dict[sub_box_index] = data
     
     sub_box_data = {}  # Dictionary to store sub-box data
-    for sub_box_index in index_pos_unique:
-        condition_sub_box = np.all((index_pos == sub_box_index), axis=1)
-        n_h = np.sum(condition_sub_box);
-        if n_h > 2: # n_h must be larger than 2, based on definition of variance and the fact that we need 3 points to compute in regression!
-            x_dot_y, x_dot_x, b, alpha, Variance_beta, n_h = analyze_sub_box(sub_box_index, condition_sub_box, ngrid, sim, spec, Mass_cut, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, vel_halos, masses, biases, coeff_halo, n_h, cdm_analysis, nu_analysis)
+    for sub_box_index, data in filtered_dict.items():
+        halo_indices_in_box = sub_box_halo_map[sub_box_index]
+        n_h = len(halo_indices_in_box)
+        condition_sub_box = np.array(halo_indices_in_box)
+        x_dot_y, x_dot_x, b, alpha, Variance_beta, n_h = analyze_sub_box(sub_box_index, condition_sub_box, ngrid, sim, spec, Mass_cut, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, vel_halos, masses, biases, coeff_halo, n_h, cdm_analysis, nu_analysis)
             
-            # Store sub-box specific data
-            sub_box_data[tuple(sub_box_index)] = {
-                'x_dot_y': x_dot_y,
-                'x_dot_x': x_dot_x,
-                'b': b,
-                'alpha': alpha,
-                'variance_b': Variance_beta,
-                'n_h': n_h,
-                }
+        # Store sub-box specific data
+        sub_box_data[tuple(sub_box_index)] = {
+            'x_dot_y': x_dot_y,
+            'x_dot_x': x_dot_x,
+            'b': b,
+            'alpha': alpha,
+            'variance_b': Variance_beta,
+            'n_h': n_h,
+            }
     save_data(save_path, spec, sim, Mass_cut, ngrid, metadata, sub_box_data)
     sub_box_data.clear()
     
@@ -552,7 +334,7 @@ def compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell
     for i in range(np.shape(x_i_list)[0]):
         errors = y_minus_yavg - alpha[i] - b[i] * x_i_list[i]  # e_i = y_i - alpha - beta x_i; An N*3 array
         sum_errors2 = np.sum(errors * errors)  # sum of e_i^2
-        Variance_beta = sum_errors2 / ((n_h-2) * (n_h-1) * np.sum(x_dot_x))  # Variance of the slope/ n_h-2 is from the formula! 
+        Variance_beta = sum_errors2 / ((n_h-2) * (n_h-1) * np.sum(x_dot_x[i]))  # Variance of the slope/ n_h-2 is from the formula! 
         Variance_beta_list.append(Variance_beta)
         
     Variance_beta = np.array(Variance_beta_list)
@@ -589,30 +371,24 @@ def compute_x_lists(f_h, f_h_avg, f_dot_v_h_average, v_nuh_cell, v_nuh2_i, v_c_c
     # halos analysis 
     x_i_list.append(f_h * v_h_cell)
     x_i_avg_list.append(f_h_avg * v_h_cell)
-    # x_description_list.append("x_i = f(b_i, M_i) <v_h>")
     
     if cdm_analysis:
         x_i_list.append(f_h * v_ch_cell)
         x_i_avg_list.append(f_h_avg * v_ch_cell)
-        # x_description_list.append("x_i = f(b_i, M_i) <v_cdm> - <v_h>/coeff")
 
         x_i_list.append(f_h * v_c_cell)
         x_i_avg_list.append(f_h_avg * v_c_cell)
-        # x_description_list.append("x_i = f(b_i, M_i) <v_cdm>")
 
     if nu_analysis:
         x_i_list.append(f_h * v_nuh_cell)
         x_i_avg_list.append(f_h_avg * v_nuh_cell)
-        # x_description_list.append("x_i = f(b_i, M_i) <v_nu> - <v_h>/coeff")
         
         x_i_list.append(f_h * v_nuh2_i)
         x_i_avg_list.append(f_h_avg * v_nuh_cell - f_dot_v_h_average / coeff_halo)
-        # x_description_list.append("x_i = f(b_i, M_i)(v_nu_cell - v_h^i/coeff)")
         
     if nu_analysis and cdm_analysis:
         x_i_list.append(f_h * v_cnu_cell)
         x_i_avg_list.append(f_h_avg * v_cnu_cell)
-        # x_description_list.append("x_i = f(b_i, M_i) <v_cdm> - <v_nu>")
     
     return x_i_list, x_i_avg_list
 
@@ -647,3 +423,245 @@ def load(file):
     with open(file, 'rb') as f:
         loaded_data = pickle.load(f)
     return loaded_data
+
+def convert_mass_cuts(Mass_cuts):
+    """
+    Convert mass cuts into variable names.
+
+    Parameters:
+    - Mass_cuts (list): List of mass cuts.
+
+    Returns:
+    - halo_masses (list): List of variable names for each mass cut.
+    """
+    halo_masses = []
+    for mass_cut in Mass_cuts:
+        notation = "{:.0e}".format(mass_cut)
+        power, exponent = notation.split('e')
+        if exponent.startswith('+'):
+            exponent = exponent[1:]  # Remove the leading '+' symbol
+        var_name = f"halo_mass_{power}e{exponent}"
+        halo_masses.append(var_name)
+    return halo_masses
+
+def load_data_bulk(file_path, ngrid, sim, spec, Mass_cut, cdm_analysis=False, nu_analysis=False):  ### Loading the bulk velocities
+    """
+    Load data.
+    Parameters:
+    - file_path (str): Path to the data files.
+    - ngrid (int): Number of grid points.
+    - sim (str): Simulation identifier.
+    - spec (str): Specification identifier.
+    - Mass_cut (float): Mass cut value.
+    - cdm_analysis (bool): Whether to add bulk velocities of cdm particles.
+    - nu_analysis (bool): Whether to add bulk velocities of nu particles.
+    Returns:
+    - cdm_bulk_all, nu_bulk_all, halo_bulk_all: Loaded data.
+    - Data based on analysis selection.
+
+    """
+    if spec=="L_500_Ngrid_6144":
+        halo_all_path = f"{file_path}/{convert_mass_cuts([Mass_cut])[0]}/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_halo_mass_{Mass_cut:.1e}.pickle"
+        # sim_type+'_L_'+str(boxsize)+'_Ngrid_'+str(N_pcl_sim)+'_'+species+f'_mass_{mass_limit:.1e}'
+        cdm_path = f"{file_path}/cdm/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_cdm.pickle"
+        nu_path = f"{file_path}/nu/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_nu.pickle" if sim != "0.0ev" else ""
+    else:
+        cdm_path = f"{file_path}/cdm/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_snap002_cdm.pickle"
+        nu_path = f"{file_path}/nu/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_snap002_ncdm0.pickle" if sim != "0.0ev" else ""
+        halo_all_path = f"{file_path}/{convert_mass_cuts([Mass_cut])[0]}/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_halos_out_2.pickle"
+        
+    
+    for path in [cdm_path, nu_path] if cdm_analysis or nu_analysis else []:
+        if path and not os.path.exists(path):
+            print(f"Warning: {path} doesn't exist.")
+            
+    # Load the data if the files exist
+    cdm_bulk_all = np.load(cdm_path, allow_pickle=True) if cdm_analysis and os.path.exists(cdm_path) else None
+    nu_bulk_all = np.load(nu_path, allow_pickle=True) if nu_analysis and os.path.exists(nu_path) and sim != "0.0ev" else None
+    halo_bulk_all = np.load(halo_all_path, allow_pickle=True)
+    if not cdm_analysis and not nu_analysis:
+        return halo_bulk_all
+        
+    elif cdm_analysis and not nu_analysis:
+        return cdm_bulk_all, halo_bulk_all
+        
+    elif not cdm_analysis and nu_analysis:
+        return nu_bulk_all, halo_bulk_all
+        
+    elif cdm_analysis and nu_analysis:
+        return cdm_bulk_all, nu_bulk_all, halo_bulk_all
+
+
+def save_data(save_path, spec, sim, Mass_cut, ngrid, metadata, data_store): ### Saving data
+    """
+    Save data.
+
+    Parameters:
+    - save_path (str): Path to save the data.
+    - spec (str): Specification identifier.
+    - sim (str): Simulation identifier.
+    - Mass_cut (float): Mass cut value.
+    - metadata (dict): Metadata.
+    - data_store (dict): Data to save.
+    """
+    directory = save_path
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+    
+    directory = save_path+"/"+f'{Mass_cut:.1e}'
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+        
+    data_to_save = {
+        'metadata': metadata,
+        'data': data_store
+    }
+    file_name = f'data_correlations_{spec}_sim_{sim}_mass_{Mass_cut:.1e}_ngrid_{ngrid}.pickle'
+    file_path = os.path.join(directory, file_name)
+
+    with open(file_path, 'wb') as handle:
+        pickle.dump(data_to_save, handle)
+
+def load_all_xy_data(save_path, spec, sim, Mass_cut, ngrid): ### Saving data
+    """
+    loading data for each ngrid data.
+
+    Parameters:
+    - save_path (str): Path to save the data.
+    - spec (str): Specification identifier.
+    - sim (str): Simulation identifier.
+    - Mass_cut (float): Mass cut value.
+    - data_store (dict): Data to save.
+    """
+    directory = save_path+"/"+f'{Mass_cut:.1e}'
+    file_name = f'data_correlations_{spec}_sim_{sim}_mass_{Mass_cut:.1e}_ngrid_{ngrid}.pickle'
+    file_path = os.path.join(directory, file_name)
+
+    with open(file_path, 'rb') as handle:
+        loaded_data = pickle.load(handle)
+    return loaded_data
+    
+def load_halo_data_JD(halo_dir, spec, sim, Mass_cut, rank_total=512):
+    """
+    Load halo data using the JD method.
+
+    Parameters:
+    - rank_total (int): Total number of ranks.
+    - halo_dir (str): Directory path of the halo data.
+    - sim (str): Simulation identifier.
+    - Mass_cut (float): Mass cut value.
+
+    Returns:
+    - pos_halos (array): Positions of halos.
+    - vel_halos (array): Velocities of halos.
+    - masses (array): Masses of halos.
+    - biases (array): Biases of halos.
+    - ratio_number_halos (float): The ratio of the number of halos satisfying the mass cut 
+      to the total number of halos.
+      """
+    pos_data=[];vel_data=[];mass_data=[]; number_tot=0;
+    for rank_id in range(rank_total):
+        ### In the case of halos!
+        if sim=="0.0ev":
+            input_file =  halo_dir+"/"+sim+"/halos/0.000halo"+str(rank_id)+".dat"
+            a = 1.;
+            file_data = ReadHaloFile_lcdm(input_file, a)
+            number_tot += np.shape(file_data[6])[0];
+            mass_conditions = (file_data[6] >= Mass_cut)  
+            file_data = np.array(file_data).T[mass_conditions]
+            pos_data_add = file_data[:,:3]
+            vel_data_add = file_data[:,3:6]
+            mass_data_add =  file_data[:,6:7]
+            pos_data.append(pos_data_add)
+            vel_data.append(vel_data_add)
+            mass_data.append(mass_data_add)         
+        else:
+            input_file =  halo_dir+"/"+sim+"/halos/0.000halo"+str(rank_id)+".dat"
+            a = 1.;
+            file_data = ReadHaloFile_data(input_file, a)
+            number_tot += np.shape(file_data[6])[0];
+            mass_conditions = (file_data[6] >= Mass_cut)  # Assuming file_data[6] contains the values
+            file_data = np.array(file_data).T[mass_conditions]
+            pos_data_add = file_data[:,:3]
+            vel_data_add = file_data[:,3:6]
+            mass_data_add =  file_data[:,6:7]
+            pos_data.append(pos_data_add)
+            vel_data.append(vel_data_add)
+            mass_data.append(mass_data_add) 
+
+    pos_halos = np.vstack(pos_data)
+    vel_halos = np.vstack(vel_data)
+    masses = np.vstack(mass_data)
+    if np.shape(masses)[0] == 0:
+        print("ERROR: No halos found for the given mass cut")
+        return None;
+    biases = bias.haloBias(masses, model = 'sheth01', z = 0.0, mdef = '200m')
+    ratio_number_halos = np.shape(masses)[0]/number_tot;
+    return pos_halos, vel_halos, masses[:,0], biases[:,0], ratio_number_halos
+
+def load_halo_data(halo_dir, spec, sim, Mass_cut):
+    """
+    Load halo data.
+
+    Parameters:
+    - halo_dir (str): Directory path of the halo data.
+    - spec (str): Specification identifier.
+    - sim (str): Simulation identifier.
+    - Mass_cut (float): Mass cut value.
+
+    Returns:
+    - pos_halos (array): Positions of halos.
+    - vel_halos (array): Velocities of halos.
+    - masses (array): Masses of halos.
+    - biases (array): Biases of halos.
+    - ratio_number_halos (float): The ratio of the number of halos satisfying the mass cut 
+      to the total number of halos.
+    """
+    halo_cat = np.loadtxt(halo_dir+spec+"/"+sim+"/output/halos/out_2.list") # Loading the full halo catalogue to loop over each halo
+    mass_conditions = (halo_cat[:,20]>=Mass_cut)                
+    halo_cat = halo_cat[mass_conditions]  # applying the mass condition
+    pos_halos = halo_cat[:,8:11];
+    vel_halos = halo_cat[:,11:14];
+    masses = halo_cat[:,20];
+    biases = bias.haloBias(masses, model = 'sheth01', z = 0.0, mdef = '200m')
+    ratio_number_halos = np.shape(masses)[0]/np.shape(mass_conditions)[0];
+    return pos_halos, vel_halos, masses, biases, ratio_number_halos
+
+
+def prepare_metadata(spec, sim, Mass_cut, ratio_number_halos, halo_dir, L, ngrid, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold):
+    """
+    Prepare metadata for the analysis.
+
+    Parameters:
+    - spec (str): Specification identifier.
+    - sim (str): Simulation identifier.
+    - Mass_cut (float): Mass cut value.
+    - ratio_number_halos (float): The ratio of the number of halos satisfying the mass cut 
+      to the total number of halos.
+    - halo_dir (str): Directory path of the halo data.
+    - L (float): Box size.
+    - ngrid (int): Grid size.
+    - n_h_threshold (int): min amount of halos in a sub-box which are going to enter the analysis 
+
+    Returns:
+    - metadata (dict): Metadata dictionary containing simulation information.
+    """
+    x_description_list = x_lists_description(cdm_analysis, nu_analysis)
+    metadata = {
+        'specification': spec,
+        'simulation': sim,
+        'mass_cut': f'{Mass_cut:.1e}',
+        'ratio_number_halos': ratio_number_halos,
+        'halo_directory': halo_dir,
+        'boxsize': L,
+        'ngrid': ngrid,
+        'coeff(v_nu - v_h/coeff)': coeff_halo,
+        'adding bulk velocity of cdm:':cdm_analysis,
+        'adding bulk velocity of neutrinos:':nu_analysis,
+        'x_description_list': x_description_list,
+        'n_h_threshold': n_h_threshold 
+               }
+    return metadata
+
+
+

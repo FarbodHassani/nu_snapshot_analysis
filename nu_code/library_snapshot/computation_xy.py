@@ -16,7 +16,7 @@ def nested_dict(n, type): # definingnested dictionary!
     else:
         return defaultdict(lambda: nested_dict(n-1, type))
 
-def compute_regression(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num=1,  n_h_threshold=3, run_tests=False, remove_extra_files=False):
+def compute_regression(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num=1,  n_h_threshold=3, run_tests=False, remove_extra_files=False, print_all_mass_cuts= False):
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     
@@ -37,7 +37,7 @@ def compute_regression(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, 
         if rank == 0:
             # Run compute_regression_func only on the process with rank 0
             print("Computing with n_h_threshold = "+ str(n_h_threshold))
-            compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, n_h_threshold, run_tests, remove_extra_files)
+            compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, n_h_threshold, run_tests, remove_extra_files, print_all_mass_cuts)
 
         # Barrier to ensure all processes finish before continuing
         comm.Barrier()
@@ -49,34 +49,10 @@ def compute_regression(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, 
             print("compute_regression finished successfully.")
     else:
         # If only 1 process, simply call compute_regression_func
-        compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, n_h_threshold, run_tests, remove_extra_files)
+        compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, n_h_threshold, run_tests, remove_extra_files, print_all_mass_cuts)
 
-# def compute_regression(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num=1, run_tests=False, remove_extra_files=False):
-#     comm = MPI.COMM_WORLD
-#     rank = comm.Get_rank()
 
-#     if rank == 0:
-#         print("Releasing extra cores and running compute_regression with one core...")
-
-#     # Get the total number of processes
-#     size = comm.Get_size()
-#     # print(size)
-#     if rank == 0:
-#         # Perform the computation
-#         compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, run_tests, remove_extra_files)
-
-#     # # Spawn a new process
-#     # else:
-#     #     print("IM HERE")
-#     #     new_comm = comm.Spawn(target=compute_regression_func, args=(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, run_tests, remove_extra_files))
-    
-#     #     # Wait for the spawned process to finish
-#     #     new_comm.Barrier()
-
-#     if rank == 0:
-#         print("compute_regression finished successfully.")
-
-def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, n_h_threshold,  run_tests, remove_extra_files):
+def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, n_h_threshold,  run_tests, remove_extra_files, print_all_mass_cuts):
     """
     Final analysis function.
     Parameters:
@@ -106,6 +82,8 @@ def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_p
     # data_store = {}
     data_store = nested_dict(4, list)
     for Mass_cut in Mass_cuts:
+        if print_all_mass_cuts == False:
+            data_store = nested_dict(4, list)
         progress_bar = tqdm(total=len(ngrid_list), desc="Progress", position=0, leave=True)
         for ngrid in ngrid_list:
             data_set = load_xy_data_ngrid(save_path, spec, sim, Mass_cut, ngrid)
@@ -140,9 +118,13 @@ def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_p
                 remove_files(save_path, spec, sim, Mass_cut, ngrid);
         # Close progress bar
         progress_bar.close()
-
-    metadata = data_set['metadata'];
-    save_data_final(save_path, spec, sim, Mass_cut, metadata, data_store)
+        if print_all_mass_cuts == False:
+            metadata = data_set['metadata'];
+            save_data_final(save_path, spec, sim, Mass_cut, metadata, data_store, print_all_mass_cuts)
+            
+    if print_all_mass_cuts == True:
+        metadata = data_set['metadata'];
+        save_data_final(save_path, spec, sim, Mass_cut, metadata, data_store, print_all_mass_cuts)
 
 def load_xy_data_ngrid(save_path, spec, sim, Mass_cut, ngrid): ### Saving data
     """
@@ -372,7 +354,7 @@ def test_computation():
     print("Number of failed tests:", failed_tests)
 
 
-def save_data_final(save_path, spec, sim, Mass_cut, metadata, data_store): ### Saving data
+def save_data_final(save_path, spec, sim, Mass_cut, metadata, data_store, print_all_mass_cuts): ### Saving data
     """
     Save data.
 
@@ -383,6 +365,8 @@ def save_data_final(save_path, spec, sim, Mass_cut, metadata, data_store): ### S
     - Mass_cut (float): Mass cut value.
     - metadata (dict): Metadata.
     - data_store (dict): Data to save.
+    - If print_all_mass_cuts = True --> All the mass cuts are saved into a single file!
+    - If print_all_mass_cuts = False --> each mass cut is saved separately in a single file!
     """
     directory = save_path
     if not os.path.exists(directory):
@@ -396,10 +380,17 @@ def save_data_final(save_path, spec, sim, Mass_cut, metadata, data_store): ### S
         'metadata': metadata,
         'data': data_store
     }
-    file_name = f'regression_data_{spec}_sim_{sim}.pickle'
-    file_path = os.path.join(directory, file_name)
 
-    with open(file_path, 'wb') as handle:
-        dill.dump({'metadata': metadata, 'data': data_store}, handle)
+    if print_all_mass_cuts == True:
+        file_name = f'regression_data_{spec}_sim_{sim}.pickle'
+        file_path = os.path.join(directory, file_name)
+    
+        with open(file_path, 'wb') as handle:
+            dill.dump({'metadata': metadata, 'data': data_store}, handle)
+    else:
+        file_path = f"{directory}/regression_data_{spec}_sim_{sim}_mass_cut_{Mass_cut:.2e}.pickle"
+    
+        with open(file_path, 'wb') as handle:
+            dill.dump({'metadata': metadata, 'data': data_store}, handle)
 
 
