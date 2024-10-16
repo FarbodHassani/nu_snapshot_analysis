@@ -50,6 +50,7 @@ def compute_regression(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, 
     else:
         # If only 1 process, simply call compute_regression_func
         compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, n_h_threshold, run_tests, remove_extra_files, print_all_mass_cuts)
+        print("compute_regression finished successfully.")
 
 
 def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, n_h_threshold,  run_tests, remove_extra_files, print_all_mass_cuts):
@@ -87,31 +88,36 @@ def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_p
         progress_bar = tqdm(total=len(ngrid_list), desc="Progress", position=0, leave=True)
         for ngrid in ngrid_list:
             data_set = load_xy_data_ngrid(save_path, spec, sim, Mass_cut, ngrid)
-            for it in range(iteration_num):
-                if it==0:
-                    computed_values = compute_values(data_set, 0., n_h_threshold) # For the first iteration we consider var_systematic = 0
-                    data_store['mass='+f'{Mass_cut:.1e}']['ngrid='+str(ngrid)]['iteration='+str(it+1)] = {
-                        'dx': L / ngrid,
-                        'Variance(beta)': computed_values['variance_beta_final'],
-                        'beta[sum(w beta)/sum(w)]': computed_values['beta_final_way1'],
-                        'beta[sum(xy)/sum(x^2)]': computed_values['beta_final_way2'],
-                        'alpha[sum(alpha)/n]': computed_values['mean_alpha_final'],
-                        'Variance(alpha)': computed_values['var_alpha_final'],
-                        'variance_sys': computed_values['variance_sys']
-                    }
-                else:
-                    variance_sys = computed_values['variance_sys']; # Previous variance!
-                    computed_values = compute_values(data_set, variance_sys, n_h_threshold) # For the first iteration we consider var_systematic = 0
-                    data_store['mass='+f'{Mass_cut:.1e}']['ngrid='+str(ngrid)]['iteration='+str(it+1)] = {
-                        'dx': L / ngrid,
-                        'Variance(beta)': computed_values['variance_beta_final'],
-                        'beta[sum(w beta)/sum(w)]': computed_values['beta_final_way1'],
-                        'beta[sum(xy)/sum(x^2)]': computed_values['beta_final_way2'],
-                        'alpha[sum(alpha)/n]': computed_values['mean_alpha_final'],
-                        'Variance(alpha)': computed_values['var_alpha_final'],
-                        'variance_sys': computed_values['variance_sys']
-                    }
-
+            if data_set['data']!={}:
+                for it in range(iteration_num):
+                    if it==0:
+                        computed_values = compute_values(data_set, 0., n_h_threshold) # For the first iteration we consider var_systematic = 0
+                        data_store['mass='+f'{Mass_cut:.1e}']['ngrid='+str(ngrid)]['iteration='+str(it+1)] = {
+                            'dx': L / ngrid,
+                            'Variance(beta)': computed_values['variance_beta_final'],
+                            'beta[sum(w beta)/sum(w)]': computed_values['beta_final_way1'],
+                            'beta[sum(xy)/sum(x^2)]': computed_values['beta_final_way2'],
+                            'alpha[sum(alpha)/n]': computed_values['mean_alpha_final'],
+                            'Variance(alpha)': computed_values['var_alpha_final'],
+                            'variance_sys': computed_values['variance_sys'],
+                            'number_sub-boxes': computed_values['n_sub_box']
+                        }
+                    else:
+                        variance_sys = computed_values['variance_sys']; # Previous variance!
+                        computed_values = compute_values(data_set, variance_sys, n_h_threshold) # For the first iteration we consider var_systematic = 0
+                        data_store['mass='+f'{Mass_cut:.1e}']['ngrid='+str(ngrid)]['iteration='+str(it+1)] = {
+                            'dx': L / ngrid,
+                            'Variance(beta)': computed_values['variance_beta_final'],
+                            'beta[sum(w beta)/sum(w)]': computed_values['beta_final_way1'],
+                            'beta[sum(xy)/sum(x^2)]': computed_values['beta_final_way2'],
+                            'alpha[sum(alpha)/n]': computed_values['mean_alpha_final'],
+                            'Variance(alpha)': computed_values['var_alpha_final'],
+                            'variance_sys': computed_values['variance_sys'],
+                            'number of sub-boxes': computed_values['n_sub_box']
+                        }
+            else:
+                data_store['mass='+f'{Mass_cut:.1e}']['ngrid='+str(ngrid)]={}
+                
             # Update progress bar
             progress_bar.update(1)
             if remove_extra_files:
@@ -120,11 +126,11 @@ def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_p
         progress_bar.close()
         if print_all_mass_cuts == False:
             metadata = data_set['metadata'];
-            save_data_final(save_path, spec, sim, Mass_cut, metadata, data_store, print_all_mass_cuts)
+            save_data_final(save_path, spec, sim, Mass_cut, metadata, data_store, print_all_mass_cuts, n_h_threshold)
             
     if print_all_mass_cuts == True:
         metadata = data_set['metadata'];
-        save_data_final(save_path, spec, sim, Mass_cut, metadata, data_store, print_all_mass_cuts)
+        save_data_final(save_path, spec, sim, Mass_cut, metadata, data_store, print_all_mass_cuts, n_h_threshold)
 
 def load_xy_data_ngrid(save_path, spec, sim, Mass_cut, ngrid): ### Saving data
     """
@@ -206,15 +212,20 @@ def compute_values(data_set, variance_sys, n_h_threshold):
     Returns:
     - dict: Dictionary containing computed statistical values.
     """
-    x_dot_y = 0.
-    x_dot_x = 0.
-    sum_w_ijk = 0.
-    sum_beta_w_ijk = 0.
-    mean_alpha_final = 0.
-    mean_alpha_final_old = 0.
-    var_alpha_final = 0.
+    x_dot_y = [0.0]
+    x_dot_x = [0.0]
+    sum_w_ijk = [0.0]
+    sum_beta_w_ijk = [0.0]
+    mean_alpha_final = [0.0]
+    mean_alpha_final_old = [0.0]
+    var_alpha_final = [0.0]
+    variance_beta_final = [0.0]
+    beta_final_way1 = [0.0]
+    beta_final_way2 = [0.0]
+    #
+    if n_h_threshold < 3:
+        raise ValueError("n_h_threshold must be at least 3. Having fewer than 3 halos in a sub-box is insufficient for computing variance. Please increase n_h_threshold to 3 or higher.")
     ### First round would be to compute mu! I decided not to do it through online algorithm as it might become complicated to implement and derive the equation!
-    # n_h_threshold = 3
     for sub_box_index in data_set['data']:
         sub_box_data = data_set['data'][sub_box_index]
         if sub_box_data['n_h'] >= n_h_threshold:
@@ -227,24 +238,30 @@ def compute_values(data_set, variance_sys, n_h_threshold):
             mean_alpha_final = mean_alpha_final + (w_ijk/sum_w_ijk) * (sub_box_data['alpha'] - mean_alpha_final)
             var_alpha_final = var_alpha_final + (w_ijk/sum_w_ijk) * ( (sub_box_data['alpha'] - mean_alpha_final) * (sub_box_data['alpha'] - mean_alpha_final_old) - var_alpha_final)
 
-    variance_beta_final = 1. / sum_w_ijk;
-    beta_final_way1 = sum_beta_w_ijk / sum_w_ijk;
-    beta_final_way2 = x_dot_y / x_dot_x;
-    
+
+    if ( (not np.all( np.array(sum_w_ijk) == 0)) and (not np.all(np.array(x_dot_x) == 0)) ):
+
+        if ( (np.any( np.array(sum_w_ijk) == 0)) and np.any(np.array(x_dot_x) == 0) ):
+            print("Warning: Some elements are zero, division may not be possible.")
+        else:
+            variance_beta_final = 1.0 / sum_w_ijk
+            beta_final_way1 = sum_beta_w_ijk / sum_w_ijk
+            beta_final_way2 = x_dot_y / x_dot_x
+
     ####### Round two of loops
     mu = beta_final_way1;
-    sum_w_ijk_squared =0.;
-    sum_w_ijk =0.;
-    sum_term_beta_w_squared = 0.;
-    sum_term = 0.;
+    sum_w_ijk_squared = [0.0];
+    sum_term = [0.0];
+    num_sub_boxes_analyzed = 0;
     for sub_box_index in data_set['data']:
         sub_box_data = data_set['data'][sub_box_index]
         if sub_box_data['n_h'] >= n_h_threshold:
+            num_sub_boxes_analyzed += 1
             #############
             w_ijk = 1. / (sub_box_data['variance_b'] + variance_sys) # variance_sys is the systematic part which is going to be find through iteration!
             w_ijk_squared = w_ijk**2 # variance_sys is the systematic part which is going to be find through iteration!
             w_ijk_cubed = 1. / (sub_box_data['variance_b'] + variance_sys)**3 # variance_sys is the systematic part which is going to be find through iteration!
-            sum_term += ((sub_box_data['b'] - mu)**2 - sub_box_data['variance_b'])*w_ijk_squared
+            sum_term += ((sub_box_data['b'] - mu)**2 - sub_box_data['variance_b']) * w_ijk_squared
             # sum_term_beta_w_squared += (sub_box_data['b'] - mu)**2 * w_ijk_squared;
             # sum_term_beta_w_cubed += (sub_box_data['b'] - mu)**2 * w_ijk_cubed;
             # sum_w_ijk += w_ijk # W_n = W_n-1 + w_ijk and W_n is Sum_i=1^n w_i
@@ -253,17 +270,21 @@ def compute_values(data_set, variance_sys, n_h_threshold):
     # deltaX = (sum_w_ijk - sum_term_beta_w_squared)/(sum_w_ijk_squared - 2.0 * sum_term_beta_w_cubed) # delta sigma_s^2 = sigma_s^2(n+1) - sigma_s^2(n)
     # variance_sys = variance_sys + deltaX
     # variance_sys = sum_term/sum_w_ijk_squared;
-    variance_sys = sum_term/sum_w_ijk_squared;
-    variance_sys[variance_sys < 0] = 0;
+    if (not np.all( np.array(sum_w_ijk_squared) == 0)):
+        if (np.any( np.array(sum_w_ijk_squared) == 0)):
+            print("Warning: Some elements are zero, division may not be possible.")
+        else:
+            variance_sys = sum_term/sum_w_ijk_squared;
+            variance_sys[variance_sys < 0] = 0;
 
-    
     return {
         'variance_beta_final': variance_beta_final,
         'beta_final_way1': beta_final_way1,
         'beta_final_way2': beta_final_way2,
         'mean_alpha_final': mean_alpha_final,
         'var_alpha_final': var_alpha_final,
-        'variance_sys': variance_sys # systematic variance for beta variation!
+        'variance_sys': variance_sys, # systematic variance for beta variation!
+        'n_sub_box' : num_sub_boxes_analyzed
     }
 
 
@@ -354,7 +375,7 @@ def test_computation():
     print("Number of failed tests:", failed_tests)
 
 
-def save_data_final(save_path, spec, sim, Mass_cut, metadata, data_store, print_all_mass_cuts): ### Saving data
+def save_data_final(save_path, spec, sim, Mass_cut, metadata, data_store, print_all_mass_cuts, n_h_threshold): ### Saving data
     """
     Save data.
 
@@ -368,6 +389,9 @@ def save_data_final(save_path, spec, sim, Mass_cut, metadata, data_store, print_
     - If print_all_mass_cuts = True --> All the mass cuts are saved into a single file!
     - If print_all_mass_cuts = False --> each mass cut is saved separately in a single file!
     """
+
+    # Update metadata with the new information
+    metadata['n_h_threshold_postprocessing'] = n_h_threshold
     directory = save_path
     if not os.path.exists(directory):
         os.makedirs(directory)

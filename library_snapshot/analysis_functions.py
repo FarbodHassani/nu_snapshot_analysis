@@ -92,6 +92,8 @@ def perform_analysis(sims, specs, Mass_cuts, L, ngrid_max, halo_dir, save_path, 
 
     # Wait for all processes to complete
     comm.Barrier()
+    if rank == 0:
+        print("Perform analysis finished!")
 
 def analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold):
     """
@@ -109,7 +111,9 @@ def analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, n
     - ngrid_list (list): List of grid points to analyze.
     - n_h_threshold (int): min amount of halos in a sub-box which are going to enter the analysis 
     """
-    
+    comm = MPI.COMM_WORLD
+    size = comm.Get_size()
+    rank = comm.Get_rank()
     # Load halo data based on simulation size (JD or FH)
     if L == 500.:
         pos_halos, vel_halos, masses, biases, ratio_number_halos = load_halo_data_JD(halo_dir, spec, sim, Mass_cut)
@@ -117,8 +121,9 @@ def analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, n
         pos_halos, vel_halos, masses, biases, ratio_number_halos = load_halo_data(halo_dir, spec, sim, Mass_cut)
 
     # Print analysis information
-    print(f"The analysis is being done for Mass_cut: {Mass_cut:.2e}")
-    if ((sim == "0.0ev") and  nu_analysis == True):
+    if rank==0:
+        print(f"The analysis is being done for Mass_cut: {Mass_cut:.2e}")
+    if ((sim == "0.0ev") and  (nu_analysis == True) and (rank == 0)):
         print("\033[38;5;214m warning: The neutrino analysis is requested while it's a non-neutrino run -- Automatically nu_analysis is set to False \033[0m")
         nu_analysis = False;
     # Analyze data for each ngrid
@@ -165,23 +170,23 @@ def analyze_ngrid(ngrid, save_path, metadata, spec, sim, L, Mass_cut, pos_halos,
     index_pos = np.int64(pos_halos * ngrid / L)
     ### Making a dictionary to avoid looping over halos for comparisons:
     # the pre-built map for quick lookup
-    sub_box_nu_map ={}
-    for i, nu_index in enumerate(index_pos):
-        halo_tuple = tuple(nu_index)
-        if nu_tuple not in sub_box_nu_map:
-            sub_box_nu_map[nu_tuple] = []
-        sub_box_nu_map[nu_tuple].append(i)
+    sub_box_halo_map ={}
+    for i, halo_index in enumerate(index_pos):
+        halo_tuple = tuple(halo_index)
+        if halo_tuple not in sub_box_halo_map:
+            sub_box_halo_map[halo_tuple] = []
+        sub_box_halo_map[halo_tuple].append(i)
     ####
     filtered_dict = {}
-    for sub_box_index, data in nu_bulk_all['sub_box_data'].items():
+    for sub_box_index, data in halo_bulk_all['sub_box_data'].items():
         # print(sub_box_index)
-        if data['N']> n_h_threshold: # Only the sub-boxes that have minimum n_h_threshold halos are kept! 
+        if data['N']>= n_h_threshold: # Only the sub-boxes that have minimum n_h_threshold halos are kept! 
              # note that n_h must be larger than 2, based on definition of variance and the fact that we need 3 points to compute in regression!
             filtered_dict[sub_box_index] = data
     
     sub_box_data = {}  # Dictionary to store sub-box data
     for sub_box_index, data in filtered_dict.items():
-        nu_indices_in_box = sub_box_halo_map[sub_box_index]
+        halo_indices_in_box = sub_box_halo_map[sub_box_index]
         n_h = len(halo_indices_in_box)
         condition_sub_box = np.array(halo_indices_in_box)
         x_dot_y, x_dot_x, b, alpha, Variance_beta, n_h = analyze_sub_box(sub_box_index, condition_sub_box, ngrid, sim, spec, Mass_cut, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, vel_halos, masses, biases, coeff_halo, n_h, cdm_analysis, nu_analysis)
@@ -334,8 +339,16 @@ def compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell
     for i in range(np.shape(x_i_list)[0]):
         errors = y_minus_yavg - alpha[i] - b[i] * x_i_list[i]  # e_i = y_i - alpha - beta x_i; An N*3 array
         sum_errors2 = np.sum(errors * errors)  # sum of e_i^2
-        Variance_beta = sum_errors2 / ((n_h-2) * (n_h-1) * np.sum(x_dot_x[i]))  # Variance of the slope/ n_h-2 is from the formula! 
-        Variance_beta_list.append(Variance_beta)
+
+        # Check n_h and x_dot_x before dividing
+        denominator = (n_h - 2) * (n_h - 1) * np.sum(x_dot_x[i])
+        # TODO/FIXME -- This needs to be improved. We don't need to save those sub-boxes! Also check well!
+        if denominator == 0:
+            Variance_beta = 1.e5  # For the sub-boxes that denominator becomes zero for any reason we put a large variance for it!
+        else:
+            Variance_beta = sum_errors2 / denominator  # Variance of the slope/ n_h-2 is from the formula!
+        # Variance_beta = sum_errors2 / ((n_h-2) * (n_h-1) * np.sum(x_dot_x[i]))  # Variance of the slope/ n_h-2 is from the formula! 
+            Variance_beta_list.append(Variance_beta)
         
     Variance_beta = np.array(Variance_beta_list)
     

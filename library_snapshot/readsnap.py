@@ -25,7 +25,6 @@ import math
 
 class snapshot_header:
   def __init__(self, filename):
-
     if os.path.exists(filename):
       curfilename = filename
     elif os.path.exists(filename+".0"):
@@ -182,12 +181,13 @@ def read_block(filename, block, parttype=-1, physical_velocities=True,
   if parttype not in [-1,0,1,2,3,4,5]:
     print("wrong parttype given");  sys.exit()
   
-  if os.path.exists(filename):        
+  if (os.path.exists(filename)): 
     curfilename = filename
     single_file = True
-  elif os.path.exists(filename+".0"):   
-    curfilename = filename+".0"
-    single_file = False
+  # FIXME: check this part carefully! To be able to read a single file for future!
+  # elif os.path.exists(filename+".0"):   
+  #   curfilename = filename+".0"
+  #   single_file = False
   else:
     print("file not found:", filename)
     print("and:", curfilename);  sys.exit()
