@@ -37,42 +37,42 @@ def generate_histogram_data_nu_ref(m_nu, boxsize, n_grid_sim, n_grid_scale, file
     data = {'hist': np.zeros(num_bins), 'bin_edges': log_bin_edges.tolist()}
 
     # Progress bar
-    with tqdm(total=_get_total_iterations(sim_type, file_path), desc='Processing') as pbar:
-        data = process_gadget2_simulation(m_nu, boxsize, n_grid_sim, n_grid_scale, file_path, bulk_velocity_path, log_bin_edges, c, number_every, pbar, do_test)
+    # with tqdm(total=_get_total_iterations(sim_type, file_path), desc='Processing') as pbar:
+    if sim_type == "JD":
+        data = process_JD_simulation(m_nu, boxsize, n_grid_sim, n_grid_scale, file_path, bulk_velocity_path, log_bin_edges, c, number_every, do_test)
+    elif sim_type == "gadget2":
+        data = process_gadget2_simulation(m_nu, boxsize, n_grid_sim, n_grid_scale, file_path, bulk_velocity_path, log_bin_edges, c, number_every, do_test)
+    
     output_file = os.path.join(save_directory, f'histogram_data_Fermi_Dirac_L_{boxsize}_{n_grid_sim}_{sim_type}_mnu_{np.round(m_nu,3)}_snap_{file_index_z}_n_grid_{n_grid_scale}.pickle')
     save_histogram_data(data, output_file)
 
-def process_gadget2_simulation(m_nu, boxsize, n_grid_sim, n_grid_scale, file_path, bulk_velocity_path, log_bin_edges, c, number_every, pbar, do_test):
+    
+def process_JD_simulation(m_nu, boxsize, n_grid_sim, n_grid_scale, file_path, bulk_velocity_path, log_bin_edges, c, number_every, do_test):
+    data = {'hist': np.zeros(len(log_bin_edges) - 1), 'bin_edges': log_bin_edges.tolist()}
+    
+    rank_max  = 512;
     data_hist = {
         'hist': np.zeros(len(log_bin_edges) - 1),
         'hist_nu': np.zeros(len(log_bin_edges) - 1),
         'bin_edges': log_bin_edges.tolist()}
-    head = readsnap.snapshot_header(file_path)
-    num_files = head.filenum
     
     nu_bulk_all = load_data_nu_bulk(bulk_velocity_path);
-    ptype = head.format
-    for num_file in range(num_files):
-        if n_grid_sim>1024:
-            vel_data = readsnap.read_block(file_path + "." + str(num_file), "VEL ", ptype, True, 0, False, False,[0,n_grid_sim**3,0,0,0,0])  
-            pos_data = readsnap.read_block(file_path + "." + str(num_file), "POS ", ptype, True, 0, False, False,[0,n_grid_sim**3,0,0,0,0])/1000.
 
-        else:
-            vel_data = readsnap.read_block(file_path + "." + str(num_file), "VEL ", ptype)
-            pos_data = readsnap.read_block(file_path + "." + str(num_file), "POS ", ptype)/1000.
-
-        head = readsnap.snapshot_header(file_path + "." + str(num_file))
-        print("The file " + file_path + "." + str(num_file), "is loading, file number", str(num_file), ", number of pcl to be laoded: ", str(head.npart),
-                  ", loaded num of particles:" + str(np.shape(vel_data)[0])) 
-
-        ###########
-        index_pos = np.int64((pos_data[:]/ boxsize)*n_grid_scale)
+    if do_test:
+        print("The test being done, only 2 files will be loaded for the test")
+        rank_max=2
+    for rank in range(rank_max):
+        input_file = f"{file_path}/0.000xv{rank}_nu.dat"
+        file_data = ReadParticleFile(input_file)
+        vel_data = np.vstack((file_data[3], file_data[4], file_data[5])).T
+        pos_data = np.vstack((file_data[0], file_data[1], file_data[2])).T
+        print("The file " + file_path + "." + str(rank), "is loading, file number", str(rank), ", loaded num of particles:" + str(np.shape(vel_data)[0])) 
+        index_pos = np.int32((pos_data[:]/ boxsize)*n_grid_scale)
         ### Making a dictionary to avoid looping over halos for comparisons:
         # the pre-built map for quick lookup
         sub_box_halo_map ={}
         for i, halo_index in enumerate(index_pos):
             halo_tuple = tuple(halo_index)
-            # print(halo_tuple)
             if halo_tuple not in sub_box_halo_map:
                 sub_box_halo_map[halo_tuple] = []
             sub_box_halo_map[halo_tuple].append(i)
@@ -80,8 +80,7 @@ def process_gadget2_simulation(m_nu, boxsize, n_grid_sim, n_grid_scale, file_pat
         filtered_dict = {}
         for sub_box_index, data in nu_bulk_all['sub_box_data'].items():
             # print(sub_box_index)
-            if data['N']> 10: # Only the sub-boxes that have minimum n_h_threshold halos are kept! 
-                 # note that n_h must be larger than 2, based on definition of variance and the fact that we need 3 points to compute in regression!
+            if data['N']> 2: # Only the sub-boxes that have minimum n_h_threshold halos are kept! 
                 filtered_dict[sub_box_index] = data
         
         sub_box_data = {}  # Dictionary to store sub-box data
@@ -109,7 +108,78 @@ def process_gadget2_simulation(m_nu, boxsize, n_grid_sim, n_grid_scale, file_pat
         
             hist_nu, _ = np.histogram(Energies_nu, bins=log_bin_edges, density=False)
             data_hist['hist_nu'] += hist_nu  # 'hist_nu' is now guaranteed to be initialized
-            pbar.update(1)  # Update progress bar
+            # pbar.update(1)  # Update progress bar
+    return data_hist
+    
+def process_gadget2_simulation(m_nu, boxsize, n_grid_sim, n_grid_scale, file_path, bulk_velocity_path, log_bin_edges, c, number_every, do_test):
+    data_hist = {
+        'hist': np.zeros(len(log_bin_edges) - 1),
+        'hist_nu': np.zeros(len(log_bin_edges) - 1),
+        'bin_edges': log_bin_edges.tolist()}
+    head = readsnap.snapshot_header(file_path)
+    num_files = head.filenum
+    if do_test:
+        print("The test being done, only 2 files will be loaded")
+        num_files = 2
+    nu_bulk_all = load_data_nu_bulk(bulk_velocity_path);
+    ptype = head.format
+    for num_file in range(num_files):
+        if n_grid_sim>1024:
+            vel_data = readsnap.read_block(file_path + "." + str(num_file), "VEL ", ptype, True, 0, False, False,[0,n_grid_sim**3,0,0,0,0])  
+            pos_data = readsnap.read_block(file_path + "." + str(num_file), "POS ", ptype, True, 0, False, False,[0,n_grid_sim**3,0,0,0,0])/1000.
+
+        else:
+            vel_data = readsnap.read_block(file_path + "." + str(num_file), "VEL ", ptype)
+            pos_data = readsnap.read_block(file_path + "." + str(num_file), "POS ", ptype)/1000.
+
+        head = readsnap.snapshot_header(file_path + "." + str(num_file))
+        print("The file " + file_path + "." + str(num_file), "is loading, file number", str(num_file), ", number of pcl to be laoded: ", str(head.npart),
+                  ", loaded num of particles:" + str(np.shape(vel_data)[0])) 
+
+        ###########
+        index_pos = np.int32((pos_data[:]/ boxsize) * n_grid_scale)
+        ### Making a dictionary to avoid looping over halos for comparisons:
+        # the pre-built map for quick lookup
+        sub_box_halo_map ={}
+        for i, halo_index in enumerate(index_pos):
+            halo_tuple = tuple(halo_index)
+            # print(halo_tuple)
+            if halo_tuple not in sub_box_halo_map:
+                sub_box_halo_map[halo_tuple] = []
+            sub_box_halo_map[halo_tuple].append(i)
+        ####
+        filtered_dict = {}
+        for sub_box_index, data in nu_bulk_all['sub_box_data'].items():
+            # print(sub_box_index)
+            if data['N']> 2: # Only the sub-boxes that have minimum n_h_threshold halos are kept! 
+                filtered_dict[sub_box_index] = data
+        
+        sub_box_data = {}  # Dictionary to store sub-box data
+        for sub_box_index, data in filtered_dict.items():
+            if sub_box_index not in sub_box_halo_map:
+                # print(f"Sub-box {sub_box_index} does not contain any halos.")
+                continue  # Skip to the next sub-box if this one has no halos
+        
+            halo_indices_in_box = sub_box_halo_map[sub_box_index]
+            n_h = len(halo_indices_in_box)
+            condition_sub_box = np.array(halo_indices_in_box)
+            vel_bulk = nu_bulk_all['sub_box_data'][sub_box_index]['sum_bulk_vel']/nu_bulk_all['sub_box_data'][sub_box_index]['N']            
+            vel_data_sub_box = vel_data[halo_indices_in_box]
+            v_norm_nu = np.sqrt( (vel_data_sub_box[::number_every, 0] - vel_bulk[0] )** 2 + (vel_data_sub_box[::number_every, 1] - vel_bulk[1] )** 2 + (vel_data_sub_box[::number_every, 2] - vel_bulk[2])** 2)
+            v_norm = np.sqrt( (vel_data_sub_box[::number_every, 0] )** 2 + (vel_data_sub_box[::number_every, 1])** 2 +(vel_data_sub_box[::number_every, 2])** 2)
+            # #####
+            p = m_nu * v_norm / c
+            Energies = p
+            p_nu = m_nu * v_norm_nu / c
+            Energies_nu = p_nu
+            ######
+            # Update histograms
+            hist, _ = np.histogram(Energies, bins=log_bin_edges, density=False)
+            data_hist['hist'] += hist  # 'hist' is now guaranteed to be initialized
+        
+            hist_nu, _ = np.histogram(Energies_nu, bins=log_bin_edges, density=False)
+            data_hist['hist_nu'] += hist_nu  # 'hist_nu' is now guaranteed to be initialized
+            # pbar.update(1)  # Update progress bar
     return data_hist
 
 def load_data_nu_bulk(file_path):  ### Loading the bulk velocities

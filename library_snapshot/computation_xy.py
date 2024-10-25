@@ -16,7 +16,7 @@ def nested_dict(n, type): # definingnested dictionary!
     else:
         return defaultdict(lambda: nested_dict(n-1, type))
 
-def compute_regression(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num=1,  n_h_threshold=3, run_tests=False, remove_extra_files=False, print_all_mass_cuts= False):
+def compute_regression(Mass_cuts, spec, sim, boxsize, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num=1,  n_h_threshold=3, run_tests=False, remove_extra_files=False, print_all_mass_cuts= False):
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     
@@ -37,7 +37,7 @@ def compute_regression(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, 
         if rank == 0:
             # Run compute_regression_func only on the process with rank 0
             print("Computing with n_h_threshold = "+ str(n_h_threshold))
-            compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, n_h_threshold, run_tests, remove_extra_files, print_all_mass_cuts)
+            compute_regression_func(Mass_cuts, spec, sim, boxsize, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, n_h_threshold, run_tests, remove_extra_files, print_all_mass_cuts)
 
         # Barrier to ensure all processes finish before continuing
         comm.Barrier()
@@ -49,18 +49,18 @@ def compute_regression(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, 
             print("compute_regression finished successfully.")
     else:
         # If only 1 process, simply call compute_regression_func
-        compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, n_h_threshold, run_tests, remove_extra_files, print_all_mass_cuts)
+        compute_regression_func(Mass_cuts, spec, sim, boxsize, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, n_h_threshold, run_tests, remove_extra_files, print_all_mass_cuts)
         print("compute_regression finished successfully.")
 
 
-def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, n_h_threshold,  run_tests, remove_extra_files, print_all_mass_cuts):
+def compute_regression_func(Mass_cuts, spec, sim, boxsize, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, iteration_num, n_h_threshold,  run_tests, remove_extra_files, print_all_mass_cuts):
     """
     Final analysis function.
     Parameters:
     - Mass_cuts (array of float): Mass cut values.
     - spec (str): Specification identifier.
     - sim (str): Simulation identifier.
-    - L (float): Box size of the simulation.
+    - boxsize (float): Box size of the simulation.
     - ngrid_max (int): Maximum number of grid points.
     - halo_dir (str): Directory path of the halo data.
     - save_path (str): Path to save the analyzed data.
@@ -82,18 +82,26 @@ def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_p
         
     # data_store = {}
     data_store = nested_dict(4, list)
+    default_metadata = {
+        'simulation': sim,
+        'spec': spec,
+        'boxsize': boxsize,
+        'ngrid_max': ngrid_max,
+        'halo_dir': halo_dir,
+        'n_h_threshold': n_h_threshold
+    }
     for Mass_cut in Mass_cuts:
         if print_all_mass_cuts == False:
             data_store = nested_dict(4, list)
-        progress_bar = tqdm(total=len(ngrid_list), desc="Progress", position=0, leave=True)
+        # progress_bar = tqdm(total=len(ngrid_list), desc="Progress", position=0, leave=True)
         for ngrid in ngrid_list:
             data_set = load_xy_data_ngrid(save_path, spec, sim, Mass_cut, ngrid)
-            if data_set['data']!={}:
+            if 'data' in data_set and data_set['data'] != {}:
                 for it in range(iteration_num):
                     if it==0:
                         computed_values = compute_values(data_set, 0., n_h_threshold) # For the first iteration we consider var_systematic = 0
                         data_store['mass='+f'{Mass_cut:.1e}']['ngrid='+str(ngrid)]['iteration='+str(it+1)] = {
-                            'dx': L / ngrid,
+                            'dx': boxsize / ngrid,
                             'Variance(beta)': computed_values['variance_beta_final'],
                             'beta[sum(w beta)/sum(w)]': computed_values['beta_final_way1'],
                             'beta[sum(xy)/sum(x^2)]': computed_values['beta_final_way2'],
@@ -106,7 +114,7 @@ def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_p
                         variance_sys = computed_values['variance_sys']; # Previous variance!
                         computed_values = compute_values(data_set, variance_sys, n_h_threshold) # For the first iteration we consider var_systematic = 0
                         data_store['mass='+f'{Mass_cut:.1e}']['ngrid='+str(ngrid)]['iteration='+str(it+1)] = {
-                            'dx': L / ngrid,
+                            'dx': boxsize / ngrid,
                             'Variance(beta)': computed_values['variance_beta_final'],
                             'beta[sum(w beta)/sum(w)]': computed_values['beta_final_way1'],
                             'beta[sum(xy)/sum(x^2)]': computed_values['beta_final_way2'],
@@ -116,43 +124,62 @@ def compute_regression_func(Mass_cuts, spec, sim, L, ngrid_max, halo_dir, save_p
                             'number of sub-boxes': computed_values['n_sub_box']
                         }
             else:
-                data_store['mass='+f'{Mass_cut:.1e}']['ngrid='+str(ngrid)]={}
-                
+                # Populate empty values if the data does not exist
+                data_store['mass=' + f'{Mass_cut:.1e}']['ngrid=' + str(ngrid)] = {
+                    'dx': boxsize / ngrid,
+                    'Variance(beta)': None,
+                    'beta[sum(w beta)/sum(w)]': None,
+                    'beta[sum(xy)/sum(x^2)]': None,
+                    'alpha[sum(alpha)/n]': None,
+                    'Variance(alpha)': None,
+                    'variance_sys': None,
+                    'number_sub-boxes': None
+                }
+                metadata = default_metadata;
+
             # Update progress bar
-            progress_bar.update(1)
+            # progress_bar.update(1)
             if remove_extra_files:
                 remove_files(save_path, spec, sim, Mass_cut, ngrid);
         # Close progress bar
-        progress_bar.close()
+        # progress_bar.close()
+
         if print_all_mass_cuts == False:
-            metadata = data_set['metadata'];
+            if 'metadata' in data_set:
+                metadata = data_set['metadata']
+            else:
+                metadata = default_metadata
             save_data_final(save_path, spec, sim, Mass_cut, metadata, data_store, print_all_mass_cuts, n_h_threshold)
             
+
     if print_all_mass_cuts == True:
-        metadata = data_set['metadata'];
+        if 'metadata' in data_set:
+            metadata = data_set['metadata'];
+        else:
+            metadata = default_metadata;
         save_data_final(save_path, spec, sim, Mass_cut, metadata, data_store, print_all_mass_cuts, n_h_threshold)
 
-def load_xy_data_ngrid(save_path, spec, sim, Mass_cut, ngrid): ### Saving data
-    """
-    loading data for each ngrid data.
+def load_xy_data_ngrid(save_path, spec, sim, Mass_cut, ngrid):
+    """Loading data for each ngrid data.
 
     Parameters:
     - save_path (str): Path to save the data.
     - spec (str): Specification identifier.
     - sim (str): Simulation identifier.
     - Mass_cut (float): Mass cut value.
-    - data_store (dict): Data to save.
     """
-    directory = save_path+"/"+f'{Mass_cut:.1e}'
+    directory = os.path.join(save_path, f'{Mass_cut:.1e}')
     file_name = f'data_correlations_{spec}_sim_{sim}_mass_{Mass_cut:.1e}_ngrid_{ngrid}.pickle'
     file_path = os.path.join(directory, file_name)
+
     try:
         with open(file_path, 'rb') as handle:
             loaded_data = pickle.load(handle)
     except FileNotFoundError:
-        print("The file "+file_name+" doesn't exist!")
-        # loaded_data = None  # or loaded_data = [] for an empty array
-    
+        raise FileNotFoundError(f"Error: The file '{file_name}' doesn't exist!")
+        # print(f"Warning: The file '{file_name}' doesn't exist!")
+        # loaded_data = {}  # Return an empty dictionary if the file is not found
+
     return loaded_data
 
 def check_file_exist(save_path, spec, sim, Mass_cut, ngrid): ### Saving data

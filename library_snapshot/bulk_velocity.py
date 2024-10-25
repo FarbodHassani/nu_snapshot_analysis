@@ -40,15 +40,18 @@ def bulk_calculation(boxsize, num_pcl, sim_type, ngrid_min, ngrid_max, ngrid_ste
         save_path (str): Path to save the results.
         type_data (str, optional): Type of data processing ('normal' or 'JD'). Defaults to 'normal'.
     """
+    boxsize = np.float64(boxsize)
     start_time_all = time.time()
     start_mem_all = psutil.Process().memory_info().rss
     comm, rank, size = get_mpi_info()
-    check_simulation_errors(sim_type, bulk_species, rank)
+    check_simulation_errors(sim_type, bulk_species, rank, comm)
     print_metadata(boxsize, num_pcl, sim_type, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path)
     loop_ngrid_list(rank, boxsize, num_pcl, sim_type, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path, type_data)
-    synchronize_processes(comm)
+    comm.Barrier()
     print_total_usage(rank, start_time_all, start_mem_all)
-
+    if rank == 0:
+        print("\n*********** All bulk velocity computation finished! ***********\n", flush=True)
+    comm.Barrier()  # Synchronize all processes
 
 # Function to loop over ngrid_list and process data
 def loop_ngrid_list(rank, boxsize, num_pcl, sim_type, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path, type_data):
@@ -67,22 +70,23 @@ def loop_ngrid_list(rank, boxsize, num_pcl, sim_type, ngrid_min, ngrid_max, ngri
         save_path (str): Path to save the results.
         type_data (str, optional): Type of data processing ('normal' or 'JD'). Defaults to 'normal'.
     """
-    
+    boxsize = np.float64(boxsize);
     ngrid_list = range(ngrid_min, ngrid_max, ngrid_step);
     ngrid_list_split = np.array_split(ngrid_list, size)
+    if len(ngrid_list_split[rank]) == 0:
+        return  # Skip this rank if no grid points are assigned
     for ngrid in ngrid_list_split[rank]:
         start_time = time.time()
         start_mem = psutil.Process().memory_info().rss
         metadata = compute_metadata(boxsize, num_pcl, sim_type, ngrid, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path)
         sub_box_data = {}
-        coeff = ngrid / (boxsize+0.01);
         if type_data == "JD":
-            process_data_JD(rank, bulk_species, sim_type, mass_limit, file_path, coeff, sub_box_data)
+            process_data_JD(rank, bulk_species, sim_type, mass_limit, file_path, ngrid, boxsize, sub_box_data)
         elif type_data == "normal":
             if bulk_species == 'halo':
-                process_halo_data(rank, file_path, mass_limit, coeff, sub_box_data)
+                process_halo_data(rank, file_path, mass_limit, ngrid, boxsize, sub_box_data)
             else:
-                process_cdm_nu_data_gadget(rank, file_path, bulk_species, coeff, sub_box_data)
+                process_cdm_nu_data_gadget(rank, file_path, bulk_species, ngrid, boxsize, sub_box_data)
         simulation = simulation_def(boxsize, num_pcl, sim_type, bulk_species, mass_limit)
         save_and_print_usage(start_time, start_mem, simulation, ngrid, sub_box_data, bulk_species, metadata, save_path)
 
@@ -95,15 +99,16 @@ def get_mpi_info():
     return comm, rank, size
 
 # Function to check and print errors based on simulation type
-def check_simulation_errors(sim_type, bulk_species, rank):
+def check_simulation_errors(sim_type, bulk_species, rank, comm):
     if sim_type == "0.0ev" and bulk_species == "nu" and rank == 0:
-        print_error("In the case of LCDM we don't have nu snapshots!")
+        print("In the case of LCDM we don't have nu snapshots!", flush=True)
+        comm.Abort(1)
 
 # Function to print metadata
 def print_metadata(boxsize, Num_pcl_sim, sim_type, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path):
     meta_data = {'boxsize': boxsize, 'N_grids_simulation': Num_pcl_sim, 'sim_type' :sim_type, 'ngrid_min': ngrid_min, 'ngrid_max': ngrid_max, 'ngrid_step': ngrid_step, 'mass cut = ':"{:.4e}".format(mass_limit)
                 , 'file_path': file_path, 'bulk_species': bulk_species, 'save_path': save_path, 'sum_b_M':'<(bias_h + (mass)_h/(1.3e14))^0.85> average in each sub-box','sum_b_M_vel_h':'<(bias_h + (mass)_h/(1.3e14))^0.85 * v_h> average in each sub-box'};
-    print(meta_data)
+    # print(meta_data)
 
 def compute_metadata(boxsize, Num_pcl_sim, sim_type, ngrid, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path):
     meta_data = {'boxsize': boxsize, 'N_grids_simulation': Num_pcl_sim, 'sim_type' :sim_type, 'ngrid': ngrid, 'ngrid_min': ngrid_min, 'ngrid_max': ngrid_max, 'ngrid_step': ngrid_step, 'mass cut = ':"{:.4e}".format(mass_limit)
@@ -112,14 +117,30 @@ def compute_metadata(boxsize, Num_pcl_sim, sim_type, ngrid, ngrid_min, ngrid_max
     return meta_data
 
 # Function to process halo data
-def process_halo_data(rank, file_path, mass_limit, coeff, sub_box_data):
+def process_halo_data(rank, file_path, mass_limit, ngrid, boxsize, sub_box_data):
+    if rank == 0:
+        file_exists = os.path.exists(file_path)
+    else:
+        file_exists = None
+    
+    # Broadcast the result of the check to all processes
+    comm = MPI.COMM_WORLD
+    file_exists = comm.bcast(file_exists, root=0)
+
+    # If the file doesn't exist, print error and abort
+    if not file_exists:
+        # if rank == 0:
+        print(f"Error: File not found at {file_path}. Exiting all processes.", flush=True)
+        comm.Barrier()  # Ensure all ranks wait before aborting
+        comm.Abort(1)
     pos, vel, masses = load_data_halo(file_path, mass_limit)
-    print(np.shape(masses), np.shape(pos))
     for pcl in range(np.shape(pos)[0]):
-        x_index = int(np.floor(pos[pcl, 0] * coeff))
-        y_index = int(np.floor(pos[pcl, 1] * coeff))
-        z_index = int(np.floor(pos[pcl, 2] * coeff))
+
+        x_index = int(np.floor( (pos[pcl, 0]/boxsize) * ngrid ))
+        y_index = int(np.floor( (pos[pcl, 1]/boxsize) * ngrid ))
+        z_index = int(np.floor( (pos[pcl, 2]/boxsize) * ngrid ))
         sub_box_index = (x_index, y_index, z_index)
+
         mass = masses[pcl]
         bias_h = bias.haloBias(mass, model='sheth01', z=0.0, mdef='200m')
         if sub_box_index not in sub_box_data:
@@ -137,15 +158,16 @@ def process_halo_data(rank, file_path, mass_limit, coeff, sub_box_data):
 
 def save_and_print_usage(start_time, start_mem, simulation, ngrid, sub_box_data, bulk_species, metadata, save_path):
     save_dataframe(sub_box_data, simulation, bulk_species, metadata, ngrid, save_path)
-    print(simulation)
-    print_usage(start_time, start_mem, f', n_grid={ngrid} Finished!')
+    print(f"{simulation}\n", flush=True)
+    print_usage(start_time, start_mem, f" n_grid={ngrid} Finished!\n")
+
 
 def print_usage(start_time, start_mem, message=""):
     end_time = time.time()
     end_mem = psutil.Process().memory_info().rss
     elapsed_time = end_time - start_time
     elapsed_mem = end_mem - start_mem
-    print(f"{message} - Time: {elapsed_time:.2f} s, Memory: {elapsed_mem / 1024 / 1024:.2f} MB")
+    print(f"{message} - Time: {elapsed_time:.2f} s, Memory: {elapsed_mem / 1024 / 1024:.2f} MB", flush=True)
 
 
 # Function to synchronize all processes
@@ -158,24 +180,43 @@ def print_total_usage(rank, start_time_all, start_mem_all):
         print_usage(start_time_all, start_mem_all, '- Total time and memory!')
 
 # Function to process cdm/nu data
-def process_cdm_nu_data_gadget(rank, file_path, bulk_species, coeff, sub_box_data):
+def process_cdm_nu_data_gadget(rank, file_path, bulk_species, ngrid, boxsize, sub_box_data):
+
+    if rank == 0:
+        file_exists = os.path.exists(file_path+".0")
+    else:
+        file_exists = None
+    
+    # Broadcast the result of the check to all processes
+    comm = MPI.COMM_WORLD
+    file_exists = comm.bcast(file_exists, root=0)
+
+    # If the file doesn't exist, print error and abort
+    if not file_exists:
+        # if rank == 0:
+        print(f"Error: File not found at {file_path}. Exiting all processes.", flush=True)
+        comm.Barrier()  # Ensure all ranks wait before aborting
+        comm.Abort(1)
+        
     head = readsnap.snapshot_header(file_path)
     num_files = head.filenum;
     ptype =  head.format;
     if rank == 0:
-        print("number of gadget files to be loaded: " + str(num_files))
+        print("number of gadget files to be loaded: " + str(num_files), flush=True)
     for num in range(num_files):
         pos, vel = load_data_gadget(file_path + "." + str(num), ptype)
         if rank == 0:
             head = readsnap.snapshot_header(file_path + "." + str(num))
-            print("The file " + file_path + "." + str(num), "is loading, file number", str(num),
+            print("\n The file " + file_path + "." + str(num), "is loading, file number", str(num),
                   ", type:" + bulk_species, ", number of pcl to be laoded: ", str(head.npart),
-                  ", loaded num of particles:" + str(np.shape(pos)[0]))
+                  ", loaded num of particles:" + str(np.shape(pos)[0]), flush=True)
         for pcl in range(np.shape(pos)[0]):
-            x_index = int(np.floor(pos[pcl, 0] * coeff))
-            y_index = int(np.floor(pos[pcl, 1] * coeff))
-            z_index = int(np.floor(pos[pcl, 2] * coeff))
+
+            x_index = int(np.floor( (pos[pcl, 0]/boxsize) * ngrid ))
+            y_index = int(np.floor( (pos[pcl, 1]/boxsize) * ngrid ))
+            z_index = int(np.floor( (pos[pcl, 2]/boxsize) * ngrid ))
             sub_box_index = (x_index, y_index, z_index)
+
             if sub_box_index not in sub_box_data:
                 sub_box_data[sub_box_index] = {
                     'sum_bulk_vel': 0.0,
@@ -187,7 +228,7 @@ def process_cdm_nu_data_gadget(rank, file_path, bulk_species, coeff, sub_box_dat
 
 
 # Function to load JD simulation data
-def process_data_JD(rank, bulk_species, sim_type, mass_limit, file_path, coeff, sub_box_data):
+def process_data_JD(rank, bulk_species, sim_type, mass_limit, file_path, ngrid, boxsize, sub_box_data):
 
     # from ReadHalos import ReadHaloFile_lcdm, ReadHaloFile_data
     # from ReadParticles import ReadParticleFile
@@ -211,10 +252,11 @@ def process_data_JD(rank, bulk_species, sim_type, mass_limit, file_path, coeff, 
                 pos = np.vstack((file_data[0][cond], file_data[1][cond], file_data[2][cond])).T
                 vel = np.vstack((file_data[3][cond], file_data[4][cond], file_data[5][cond])).T
             for pcl in range(np.shape(pos)[0]):
-                x_index = int(np.floor(pos[pcl, 0] * coeff))
-                y_index = int(np.floor(pos[pcl, 1] * coeff))
-                z_index = int(np.floor(pos[pcl, 2] * coeff))
+                x_index = int(np.floor( (pos[pcl, 0]/boxsize) * ngrid ))
+                y_index = int(np.floor( (pos[pcl, 1]/boxsize) * ngrid ))
+                z_index = int(np.floor( (pos[pcl, 2]/boxsize) * ngrid ))
                 sub_box_index = (x_index, y_index, z_index)
+                
                 mass = masses[pcl]
                 bias_h = bias.haloBias(mass, model='sheth01', z=0.0, mdef='200m')
                 if sub_box_index not in sub_box_data:
@@ -237,9 +279,9 @@ def process_data_JD(rank, bulk_species, sim_type, mass_limit, file_path, coeff, 
             pos = np.vstack((file_data[0], file_data[1], file_data[2])).T
             vel = np.vstack((file_data[3], file_data[4], file_data[5])).T
             for pcl in range(np.shape(pos)[0]):
-                x_index = int(np.floor(pos[pcl, 0] * coeff))
-                y_index = int(np.floor(pos[pcl, 1] * coeff))
-                z_index = int(np.floor(pos[pcl, 2] * coeff))
+                x_index = int(np.floor( (pos[pcl, 0]/boxsize) * ngrid ))
+                y_index = int(np.floor( (pos[pcl, 1]/boxsize) * ngrid ))
+                z_index = int(np.floor( (pos[pcl, 2]/boxsize) * ngrid ))
                 sub_box_index = (x_index, y_index, z_index)
                 if sub_box_index not in sub_box_data:
                     sub_box_data[sub_box_index] = {
@@ -252,9 +294,9 @@ def process_data_JD(rank, bulk_species, sim_type, mass_limit, file_path, coeff, 
 
 def simulation_def(boxsize, N_pcl_sim, sim_type, species, mass_limit):
     if species == "halo":
-        return sim_type+'_L_'+str(boxsize)+'_Ngrid_'+str(N_pcl_sim)+'_'+species+f'_mass_{mass_limit:.1e}'
+        return sim_type+'_L_'+str(int(boxsize))+'_Ngrid_'+str(N_pcl_sim)+'_'+species+f'_mass_{mass_limit:.1e}'
     else:
-        return sim_type+'_L_'+str(boxsize)+'_Ngrid_'+str(N_pcl_sim)+'_'+species
+        return sim_type+'_L_'+str(int(boxsize))+'_Ngrid_'+str(N_pcl_sim)+'_'+species
     
 def load_data_gadget(sim_path, ptype):
     # particles read

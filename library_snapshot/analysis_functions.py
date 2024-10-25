@@ -27,14 +27,14 @@ from library_snapshot import computation_xy
 ## Functions
 #############
 
-def perform_analysis(sims, specs, Mass_cuts, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo=1., num_cores=1, cdm_analysis=False, nu_analysis=False, n_h_threshold = 3):
+def perform_analysis(sims, specs, Mass_cuts, boxsize, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo=1., num_cores=1, cdm_analysis=False, nu_analysis=False, n_h_threshold = 3):
     """
     Main function to perform analysis for different combinations of simulation parameters.
     Parameters:
     - sims (list): List of simulation identifiers.
     - specs (list): List of specification identifiers.
     - Mass_cuts (list): List of mass cut values.
-    - L (float): Box size of the simulation.
+    - boxsize (float): Box size of the simulation.
     - ngrid_max (int): Maximum number of grid points.
     - halo_dir (str): Directory path of the halo data.
     - save_path (str): Path to save the analyzed data.
@@ -50,6 +50,7 @@ def perform_analysis(sims, specs, Mass_cuts, L, ngrid_max, halo_dir, save_path, 
     size = comm.Get_size()
     rank = comm.Get_rank()
 
+    boxsize = np.float64(boxsize);
     if rank == 0:
         total_combinations = len(Mass_cuts) * len(specs) * len(sims)
 
@@ -86,16 +87,17 @@ def perform_analysis(sims, specs, Mass_cuts, L, ngrid_max, halo_dir, save_path, 
         Mass_cut = Mass_cuts[Mass_cut_index]
         spec = specs[spec_index]
         sim = sims[sim_index]
+        # print(f"Processor {rank} is handling: Mass_cut = {Mass_cut:.2e}, Spec = {spec}, Sim = {sim}")
 
         # Perform analysis for the current combination
-        analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold)
+        analyze_all_ngrids(Mass_cut, spec, sim, boxsize, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold)
 
     # Wait for all processes to complete
     comm.Barrier()
     if rank == 0:
         print("Perform analysis finished!")
 
-def analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold):
+def analyze_all_ngrids(Mass_cut, spec, sim, boxsize, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold):
     """
     Main analysis function which goes through a list of ngrids and print out the sub-boxes and the important information for each ngrid and save it as a file!
 
@@ -103,7 +105,7 @@ def analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, n
     - Mass_cut (float): Mass cut value.
     - spec (str): Specification identifier.
     - sim (str): Simulation identifier.
-    - L (float): Box size of the simulation.
+    - boxsize (float): Box size of the simulation.
     - ngrid_max (int): Maximum number of grid points.
     - halo_dir (str): Directory path of the halo data.
     - save_path (str): Path to save the analyzed data.
@@ -115,7 +117,7 @@ def analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, n
     size = comm.Get_size()
     rank = comm.Get_rank()
     # Load halo data based on simulation size (JD or FH)
-    if L == 500.:
+    if boxsize == 500.:
         pos_halos, vel_halos, masses, biases, ratio_number_halos = load_halo_data_JD(halo_dir, spec, sim, Mass_cut)
     else:
         pos_halos, vel_halos, masses, biases, ratio_number_halos = load_halo_data(halo_dir, spec, sim, Mass_cut)
@@ -129,10 +131,10 @@ def analyze_all_ngrids(Mass_cut, spec, sim, L, ngrid_max, halo_dir, save_path, n
     # Analyze data for each ngrid
     for ngrid in ngrid_list:
         # Prepare metadata
-        metadata = prepare_metadata(spec, sim, Mass_cut, ratio_number_halos, halo_dir, L, ngrid, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold)
-        analyze_ngrid(ngrid,  save_path, metadata, spec, sim, L, Mass_cut, pos_halos, vel_halos, masses, biases, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold)
+        metadata = prepare_metadata(spec, sim, Mass_cut, ratio_number_halos, halo_dir, boxsize, ngrid, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold)
+        analyze_ngrid(ngrid,  save_path, metadata, spec, sim, boxsize, Mass_cut, pos_halos, vel_halos, masses, biases, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold)
 
-def analyze_ngrid(ngrid, save_path, metadata, spec, sim, L, Mass_cut, pos_halos, vel_halos, masses, biases, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold):
+def analyze_ngrid(ngrid, save_path, metadata, spec, sim, boxsize, Mass_cut, pos_halos, vel_halos, masses, biases, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold):
     """
     Analyze data for a specific ngrid.
     Parameters:
@@ -167,8 +169,7 @@ def analyze_ngrid(ngrid, save_path, metadata, spec, sim, L, Mass_cut, pos_halos,
     else:
         halo_bulk_all = result
         
-    index_pos = np.int64(pos_halos * ngrid / L)
-    ### Making a dictionary to avoid looping over halos for comparisons:
+    index_pos = np.int32( (pos_halos/boxsize) * ngrid) #
     # the pre-built map for quick lookup
     sub_box_halo_map ={}
     for i, halo_index in enumerate(index_pos):
@@ -186,20 +187,29 @@ def analyze_ngrid(ngrid, save_path, metadata, spec, sim, L, Mass_cut, pos_halos,
     
     sub_box_data = {}  # Dictionary to store sub-box data
     for sub_box_index, data in filtered_dict.items():
-        halo_indices_in_box = sub_box_halo_map[sub_box_index]
+        # halo_indices_in_box = sub_box_halo_map[sub_box_index]
+
+        try:
+            halo_indices_in_box = sub_box_halo_map[sub_box_index]
+        except KeyError:
+            print(f"KeyError for sub_box_index: {sub_box_index}. ngrid: {ngrid}, Mass_cut: {Mass_cut:.2e}, spec: {spec}, sim: {sim}")
+            continue  # Optionally, you can skip this iteration if the key is missing
         n_h = len(halo_indices_in_box)
         condition_sub_box = np.array(halo_indices_in_box)
-        x_dot_y, x_dot_x, b, alpha, Variance_beta, n_h = analyze_sub_box(sub_box_index, condition_sub_box, ngrid, sim, spec, Mass_cut, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, vel_halos, masses, biases, coeff_halo, n_h, cdm_analysis, nu_analysis)
+        x_dot_y, x_dot_x, b, alpha, Variance_beta, n_h, store_sub_box = analyze_sub_box(sub_box_index, condition_sub_box, ngrid, sim, spec, Mass_cut, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, vel_halos, masses, biases, coeff_halo, n_h, cdm_analysis, nu_analysis)
             
         # Store sub-box specific data
-        sub_box_data[tuple(sub_box_index)] = {
-            'x_dot_y': x_dot_y,
-            'x_dot_x': x_dot_x,
-            'b': b,
-            'alpha': alpha,
-            'variance_b': Variance_beta,
-            'n_h': n_h,
+        if store_sub_box:
+            sub_box_data[tuple(sub_box_index)] = {
+                'x_dot_y': x_dot_y,
+                'x_dot_x': x_dot_x,
+                'b': b,
+                'alpha': alpha,
+                'variance_b': Variance_beta,
+                'n_h': n_h,
             }
+        else:
+            print(f"The sub-box with sub_box_index: {sub_box_index}. ngrid: {ngrid}, Mass_cut: {Mass_cut:.2e}, spec: {spec}, sim: {sim} has been excluded from computation due to an issue!")
     save_data(save_path, spec, sim, Mass_cut, ngrid, metadata, sub_box_data)
     sub_box_data.clear()
     
@@ -232,9 +242,9 @@ def analyze_sub_box(sub_box_index, condition_sub_box, ngrid, sim, spec, Mass_cut
     x_i_list, x_i_avg_list = compute_x_lists(f_h, f_h_avg, f_dot_v_h_average, v_nuh_cell, v_nuh2_i, v_c_cell, v_h_cell, v_ch_cell, v_cnu_cell, coeff_halo, cdm_analysis, nu_analysis)
 
     # Compute regression parameters and variance
-    x_dot_y, x_dot_x, b, alpha, Variance_beta = compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell, n_h) 
+    x_dot_y, x_dot_x, b, alpha, Variance_beta, store_sub_box = compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell, n_h, sub_box_index, ngrid, sim, Mass_cut) 
 
-    return x_dot_y, x_dot_x, b, alpha, Variance_beta, n_h
+    return x_dot_y, x_dot_x, b, alpha, Variance_beta, n_h, store_sub_box
 
 def extract_sub_box_data(sim, sub_box_index, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, condition_sub_box, vel_halos, masses, biases, coeff_halo, cdm_analysis, nu_analysis):
     """
@@ -292,7 +302,7 @@ def extract_sub_box_data(sim, sub_box_index, cdm_bulk_all, nu_bulk_all, halo_bul
 
     return vel_halos_subBox, v_h_cell, mass, bias_h, f_h, f_h_avg, f_dot_v_h_average, v_c_cell, v_ch_cell, v_nu_cell, v_cnu_cell, v_nuh_cell, v_nuh2_i
         
-def compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell, n_h):
+def compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell, n_h, sub_box_index, ngrid, sim, Mass_cut):
     """
     Compute regression parameters.
 
@@ -319,12 +329,18 @@ def compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell
     b_list = []
     alpha_list = []
     Variance_beta_list = []
+    store_sub_box = True  # Initialize indicator as True
 
     for x_i, x_i_avg in zip(x_i_list, x_i_avg_list):
         x_minus_xavg = x_i - x_i_avg  # x-<x>; N*3 array
-        x_dot_y = np.sum(np.sum(y_minus_yavg * x_minus_xavg, axis=1))  # (y-<y>).(x-<x>)
+        x_dot_y = np.sum(np.sum(y_minus_yavg * x_minus_xavg, axis=1))  # (y-<y>).(x-<x>) this sum is the same as np.sum((x_minus_xavg * y_minus_yavg)[:,:])
         x_dot_x = np.sum(np.sum(x_minus_xavg * x_minus_xavg, axis=1))  # (x - <x>)(x-<x>)
-        b = x_dot_y / x_dot_x  # Slope b_1 in the sub-box! y_i = b x_i + alpha
+        if (x_dot_x == 0.):
+            print(f"WARNING: The coefficient in the regression cannot be calculated! Investigate what's going on! sub_box_index: {sub_box_index}, ngrid: {ngrid}, sim: {sim}, Mass_cut: {Mass_cut:.2e}, this sub-box is excluded!")
+            store_sub_box = False
+            
+        b = x_dot_y / x_dot_x if x_dot_x != 0 else 0
+          # Slope b_1 in the sub-box! y_i = b x_i + alpha
         alpha = np.mean(y_minus_yavg - b * x_i_avg)  # <y> - b <x> Note that here we take the mean of the whole y-y_bar and x_i_avg so we mix x,y,z components of velocities. However we could do 
         # alpha = np.mean(np.mean(np.transpose(y_minus_yavg - b * x_i_avg), axis=1)), but at the end it doesn't make any difference! Note that \alpha should be of order b*x_bar e.g., <v_h>
         x_dot_y_list.append(x_dot_y)
@@ -336,23 +352,25 @@ def compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell
     x_dot_x = np.array(x_dot_x_list)
     b = np.array(b_list)
     alpha = np.array(alpha_list)
-    for i in range(np.shape(x_i_list)[0]):
-        errors = y_minus_yavg - alpha[i] - b[i] * x_i_list[i]  # e_i = y_i - alpha - beta x_i; An N*3 array
-        sum_errors2 = np.sum(errors * errors)  # sum of e_i^2
-
-        # Check n_h and x_dot_x before dividing
-        denominator = (n_h - 2) * (n_h - 1) * np.sum(x_dot_x[i])
-        # TODO/FIXME -- This needs to be improved. We don't need to save those sub-boxes! Also check well!
-        if denominator == 0:
-            Variance_beta = 1.e5  # For the sub-boxes that denominator becomes zero for any reason we put a large variance for it!
-        else:
-            Variance_beta = sum_errors2 / denominator  # Variance of the slope/ n_h-2 is from the formula!
-        # Variance_beta = sum_errors2 / ((n_h-2) * (n_h-1) * np.sum(x_dot_x[i]))  # Variance of the slope/ n_h-2 is from the formula! 
-            Variance_beta_list.append(Variance_beta)
-        
-    Variance_beta = np.array(Variance_beta_list)
+        # Compute variance beta if store_sub_box is still True
+    if store_sub_box:
+        for i in range(np.shape(x_i_list)[0]):
+            errors = y_minus_yavg - alpha[i] - b[i] * x_i_list[i]  # e_i = y_i - alpha - beta x_i; An N*3 array
+            sum_errors2 = np.sum(errors * errors)  # sum of e_i^2
     
-    return x_dot_y, x_dot_x, b, alpha, Variance_beta
+            # Check n_h and x_dot_x before dividing
+            denominator = (n_h - 2) * (n_h - 1) * np.sum(x_dot_x[i])
+            # TODO/FIXME -- This needs to be improved. We don't need to save those sub-boxes! Also check well!
+            if denominator == 0:
+                print(f"WARNING: Somethig is wrong As the denominator is 0! sub_box_index: {sub_box_index}, ngrid: {ngrid}, sim: {sim}, Mass_cut: {Mass_cut:.2e}");
+                store_sub_box = False
+                break  # Stop further processing if variance cannot be calculated
+            else:
+                Variance_beta = sum_errors2 / denominator  # Variance of the slope/ n_h-2 is from the formula!
+            # Variance_beta = sum_errors2 / ((n_h-2) * (n_h-1) * np.sum(x_dot_x[i]))  # Variance of the slope/ n_h-2 is from the formula! 
+                Variance_beta_list.append(Variance_beta)
+                
+    return x_dot_y, x_dot_x, b, alpha, np.array(Variance_beta_list), store_sub_box
 
 
 
@@ -377,33 +395,38 @@ def compute_x_lists(f_h, f_h_avg, f_dot_v_h_average, v_nuh_cell, v_nuh2_i, v_c_c
     - x_i_list (list): List of x_i arrays.
     - x_i_avg_list (list): List of x_i_avg arrays.
     """
+
+    # note that x_i_list[0] == f_h * v_h_cell; which it self is a 3*N_halos vector
+    #  x_i_list[1] == f_h * v_ch_cell; which it self is a N_halos*3 vector
+
     x_i_list = []
     x_i_avg_list = []
     f_h = f_h[:, np.newaxis]
     
     # halos analysis 
-    x_i_list.append(f_h * v_h_cell)
+    x_i_list.append(f_h * v_h_cell) # element 0 of x_i_list which is a  N_halos*3 vector
     x_i_avg_list.append(f_h_avg * v_h_cell)
     
     if cdm_analysis:
-        x_i_list.append(f_h * v_ch_cell)
+        x_i_list.append(f_h * v_ch_cell) # element 1 of x_i_list which is a  N_halos*3 vector
         x_i_avg_list.append(f_h_avg * v_ch_cell)
 
-        x_i_list.append(f_h * v_c_cell)
+        x_i_list.append(f_h * v_c_cell) # element 2 of x_i_list which is a  N_halos*3 vector
         x_i_avg_list.append(f_h_avg * v_c_cell)
 
     if nu_analysis:
-        x_i_list.append(f_h * v_nuh_cell)
+        x_i_list.append(f_h * v_nuh_cell) # if neutrinos are requested! element 3 of x_i_list which is a  N_halos*3 vector
         x_i_avg_list.append(f_h_avg * v_nuh_cell)
         
-        x_i_list.append(f_h * v_nuh2_i)
+        x_i_list.append(f_h * v_nuh2_i) # if neutrinos are requested! element 4 of x_i_list which is a  N_halos*3 vector
         x_i_avg_list.append(f_h_avg * v_nuh_cell - f_dot_v_h_average / coeff_halo)
         
     if nu_analysis and cdm_analysis:
-        x_i_list.append(f_h * v_cnu_cell)
+        x_i_list.append(f_h * v_cnu_cell) # if both cdm and nu are requested: element 5 of x_i_list which is a  N_halos*3 vector
         x_i_avg_list.append(f_h_avg * v_cnu_cell)
     
-    return x_i_list, x_i_avg_list
+    return x_i_list, x_i_avg_list # the shape of x_i_list is (6, N_halos, 3) -- so for each index we have N_halo * 3 which is basically f_h_avg * v_cell
+    # The shape of x_i_avg_list (6, 3)
 
 def x_lists_description(cdm_analysis, nu_analysis):
     """
@@ -576,7 +599,7 @@ def load_halo_data_JD(halo_dir, spec, sim, Mass_cut, rank_total=512):
     for rank_id in range(rank_total):
         ### In the case of halos!
         if sim=="0.0ev":
-            input_file =  halo_dir+"/"+sim+"/halos/0.000halo"+str(rank_id)+".dat"
+            input_file =  halo_dir+spec+"/"+sim+"/halos/0.000halo"+str(rank_id)+".dat"
             a = 1.;
             file_data = ReadHaloFile_lcdm(input_file, a)
             number_tot += np.shape(file_data[6])[0];
@@ -589,7 +612,7 @@ def load_halo_data_JD(halo_dir, spec, sim, Mass_cut, rank_total=512):
             vel_data.append(vel_data_add)
             mass_data.append(mass_data_add)         
         else:
-            input_file =  halo_dir+"/"+sim+"/halos/0.000halo"+str(rank_id)+".dat"
+            input_file =  halo_dir+spec+"/"+sim+"/halos/0.000halo"+str(rank_id)+".dat"
             a = 1.;
             file_data = ReadHaloFile_data(input_file, a)
             number_tot += np.shape(file_data[6])[0];
@@ -641,7 +664,7 @@ def load_halo_data(halo_dir, spec, sim, Mass_cut):
     return pos_halos, vel_halos, masses, biases, ratio_number_halos
 
 
-def prepare_metadata(spec, sim, Mass_cut, ratio_number_halos, halo_dir, L, ngrid, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold):
+def prepare_metadata(spec, sim, Mass_cut, ratio_number_halos, halo_dir, boxsize, ngrid, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold):
     """
     Prepare metadata for the analysis.
 
@@ -652,7 +675,7 @@ def prepare_metadata(spec, sim, Mass_cut, ratio_number_halos, halo_dir, L, ngrid
     - ratio_number_halos (float): The ratio of the number of halos satisfying the mass cut 
       to the total number of halos.
     - halo_dir (str): Directory path of the halo data.
-    - L (float): Box size.
+    - boxsize (float): Box size.
     - ngrid (int): Grid size.
     - n_h_threshold (int): min amount of halos in a sub-box which are going to enter the analysis 
 
@@ -666,7 +689,7 @@ def prepare_metadata(spec, sim, Mass_cut, ratio_number_halos, halo_dir, L, ngrid
         'mass_cut': f'{Mass_cut:.1e}',
         'ratio_number_halos': ratio_number_halos,
         'halo_directory': halo_dir,
-        'boxsize': L,
+        'boxsize': boxsize,
         'ngrid': ngrid,
         'coeff(v_nu - v_h/coeff)': coeff_halo,
         'adding bulk velocity of cdm:':cdm_analysis,

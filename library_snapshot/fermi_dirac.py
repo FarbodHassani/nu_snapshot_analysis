@@ -75,9 +75,9 @@ def process_gadget2_simulation(m_nu, file_path, n_grid, log_bin_edges, c, number
     ptype = head.format
     for num_file in range(num_files):
         if n_grid>1024:
-            vel_data = readsnap.read_block(file_path, "VEL ", ptype, True, 0, False, False,[0,n_grid**3,0,0,0,0])  
+            vel_data = readsnap.read_block(file_path + "." + str(num_file), "VEL ", ptype, True, 0, False, False,[0,n_grid**3,0,0,0,0])  
         else:
-            vel_data = readsnap.read_block(file_path, "VEL ", ptype)
+            vel_data = readsnap.read_block(file_path + "." + str(num_file), "VEL ", ptype)
         head = readsnap.snapshot_header(file_path + "." + str(num_file))
         print("The file " + file_path + "." + str(num_file), "is loading, file number", str(num_file), ", number of pcl to be laoded: ", str(head.npart),
                   ", loaded num of particles:" + str(np.shape(vel_data)[0]))        
