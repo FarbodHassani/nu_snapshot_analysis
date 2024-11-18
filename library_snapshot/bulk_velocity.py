@@ -22,7 +22,7 @@ from ReadParticles import *
 
 
 
-def bulk_calculation(boxsize, num_pcl, sim_type, ngrid_min, ngrid_max, ngrid_step, bulk_species, file_path, mass_limit, save_path, type_data="normal"):
+def bulk_calculation(boxsize, num_pcl, sim_type, spec, ngrid_min, ngrid_max, ngrid_step, bulk_species, file_path, mass_limit, save_path, type_data="normal"):
     """
     Perform bulk calculation over the specified parameters.
 
@@ -45,8 +45,8 @@ def bulk_calculation(boxsize, num_pcl, sim_type, ngrid_min, ngrid_max, ngrid_ste
     start_mem_all = psutil.Process().memory_info().rss
     comm, rank, size = get_mpi_info()
     check_simulation_errors(sim_type, bulk_species, rank, comm)
-    print_metadata(boxsize, num_pcl, sim_type, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path)
-    loop_ngrid_list(rank, boxsize, num_pcl, sim_type, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path, type_data)
+    print_metadata(boxsize, num_pcl, sim_type, spec, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path)
+    loop_ngrid_list(rank, boxsize, num_pcl, sim_type, spec, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path, type_data)
     comm.Barrier()
     print_total_usage(rank, start_time_all, start_mem_all)
     if rank == 0:
@@ -54,7 +54,7 @@ def bulk_calculation(boxsize, num_pcl, sim_type, ngrid_min, ngrid_max, ngrid_ste
     comm.Barrier()  # Synchronize all processes
 
 # Function to loop over ngrid_list and process data
-def loop_ngrid_list(rank, boxsize, num_pcl, sim_type, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path, type_data):
+def loop_ngrid_list(rank, boxsize, num_pcl, sim_type, spec, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path, type_data):
     """
     Loop over the list of grid sizes and process data accordingly.
 
@@ -78,7 +78,7 @@ def loop_ngrid_list(rank, boxsize, num_pcl, sim_type, ngrid_min, ngrid_max, ngri
     for ngrid in ngrid_list_split[rank]:
         start_time = time.time()
         start_mem = psutil.Process().memory_info().rss
-        metadata = compute_metadata(boxsize, num_pcl, sim_type, ngrid, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path)
+        metadata = compute_metadata(boxsize, num_pcl, sim_type, spec, ngrid, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path)
         sub_box_data = {}
         if type_data == "JD":
             process_data_JD(rank, bulk_species, sim_type, mass_limit, file_path, ngrid, boxsize, sub_box_data)
@@ -87,7 +87,7 @@ def loop_ngrid_list(rank, boxsize, num_pcl, sim_type, ngrid_min, ngrid_max, ngri
                 process_halo_data(rank, file_path, mass_limit, ngrid, boxsize, sub_box_data)
             else:
                 process_cdm_nu_data_gadget(rank, file_path, bulk_species, ngrid, boxsize, sub_box_data)
-        simulation = simulation_def(boxsize, num_pcl, sim_type, bulk_species, mass_limit)
+        simulation = simulation_def(boxsize, spec, num_pcl, sim_type, bulk_species, mass_limit)
         save_and_print_usage(start_time, start_mem, simulation, ngrid, sub_box_data, bulk_species, metadata, save_path)
 
 
@@ -105,13 +105,13 @@ def check_simulation_errors(sim_type, bulk_species, rank, comm):
         comm.Abort(1)
 
 # Function to print metadata
-def print_metadata(boxsize, Num_pcl_sim, sim_type, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path):
-    meta_data = {'boxsize': boxsize, 'N_grids_simulation': Num_pcl_sim, 'sim_type' :sim_type, 'ngrid_min': ngrid_min, 'ngrid_max': ngrid_max, 'ngrid_step': ngrid_step, 'mass cut = ':"{:.4e}".format(mass_limit)
+def print_metadata(boxsize, Num_pcl_sim, sim_type, spec, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path):
+    meta_data = {'spec': spec, 'boxsize': boxsize, 'N_grids_simulation': Num_pcl_sim, 'sim_type' :sim_type, 'ngrid_min': ngrid_min, 'ngrid_max': ngrid_max, 'ngrid_step': ngrid_step, 'mass cut = ':"{:.4e}".format(mass_limit)
                 , 'file_path': file_path, 'bulk_species': bulk_species, 'save_path': save_path, 'sum_b_M':'<(bias_h + (mass)_h/(1.3e14))^0.85> average in each sub-box','sum_b_M_vel_h':'<(bias_h + (mass)_h/(1.3e14))^0.85 * v_h> average in each sub-box'};
     # print(meta_data)
 
-def compute_metadata(boxsize, Num_pcl_sim, sim_type, ngrid, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path):
-    meta_data = {'boxsize': boxsize, 'N_grids_simulation': Num_pcl_sim, 'sim_type' :sim_type, 'ngrid': ngrid, 'ngrid_min': ngrid_min, 'ngrid_max': ngrid_max, 'ngrid_step': ngrid_step, 'mass cut = ':"{:.4e}".format(mass_limit)
+def compute_metadata(boxsize, Num_pcl_sim, sim_type, spec, ngrid, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path):
+    meta_data = {'spec': spec, 'boxsize': boxsize, 'N_grids_simulation': Num_pcl_sim, 'sim_type' :sim_type, 'ngrid': ngrid, 'ngrid_min': ngrid_min, 'ngrid_max': ngrid_max, 'ngrid_step': ngrid_step, 'mass cut = ':"{:.4e}".format(mass_limit)
                 , 'file_path': file_path, 'bulk_species': bulk_species, 'ngrid': ngrid, 'save_path': save_path, 'sum_b_M':'<(bias_h + (mass)_h/(1.3e14))^0.85> average in each sub-box','sum_b_M_vel_h':'<(bias_h + (mass)_h/(1.3e14))^0.85 * v_h> average in each sub-box'};
 
     return meta_data
@@ -292,11 +292,11 @@ def process_data_JD(rank, bulk_species, sim_type, mass_limit, file_path, ngrid, 
                 sub_box_data[sub_box_index]['N'] += 1
 
 
-def simulation_def(boxsize, N_pcl_sim, sim_type, species, mass_limit):
+def simulation_def(boxsize, spec, N_pcl_sim, sim_type, species, mass_limit):
     if species == "halo":
-        return sim_type+'_L_'+str(int(boxsize))+'_Ngrid_'+str(N_pcl_sim)+'_'+species+f'_mass_{mass_limit:.1e}'
+        return sim_type+'_'+spec+'_'+species+f'_mass_{mass_limit:.1e}'
     else:
-        return sim_type+'_L_'+str(int(boxsize))+'_Ngrid_'+str(N_pcl_sim)+'_'+species
+        return sim_type+'_'+spec+'_'+'_'+species
     
 def load_data_gadget(sim_path, ptype):
     # particles read

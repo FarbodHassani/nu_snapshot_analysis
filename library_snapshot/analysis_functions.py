@@ -504,9 +504,7 @@ def load_data_bulk(file_path, ngrid, sim, spec, Mass_cut, cdm_analysis=False, nu
     else:
         cdm_path = f"{file_path}/cdm/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_snap002_cdm.pickle"
         nu_path = f"{file_path}/nu/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_snap002_ncdm0.pickle" if sim != "0.0ev" else ""
-        halo_all_path = f"{file_path}/{convert_mass_cuts([Mass_cut])[0]}/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_halos_out_2.pickle"
-        
-    
+        halo_all_path = f"{file_path}/{convert_mass_cuts([Mass_cut])[0]}/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_halo_mass_{Mass_cut:.1e}.pickle"
     for path in [cdm_path, nu_path] if cdm_analysis or nu_analysis else []:
         if path and not os.path.exists(path):
             print(f"Warning: {path} doesn't exist.")
