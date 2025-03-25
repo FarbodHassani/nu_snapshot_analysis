@@ -296,7 +296,7 @@ def simulation_def(boxsize, spec, N_pcl_sim, sim_type, species, mass_limit):
     if species == "halo":
         return sim_type+'_'+spec+'_'+species+f'_mass_{mass_limit:.1e}'
     else:
-        return sim_type+'_'+spec+'_'+'_'+species
+        return sim_type+'_'+spec+'_'+species
     
 def load_data_gadget(sim_path, ptype):
     # particles read

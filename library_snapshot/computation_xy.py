@@ -9,6 +9,7 @@ from collections import defaultdict
 import dill
 sys.path.append('/mn/stornext/u3/hassanif/neutrino_niayesh/Analysis/nu_code/library_snapshot')
 
+## TODO: Important! Note that in the original method of beta, we need to compute x_i - <x>, where <x> means the average over all halos, which is not considered properly here! Need to be improved!
 
 def nested_dict(n, type): # definingnested dictionary!
     if n==1:
@@ -75,7 +76,6 @@ def compute_regression_func(Mass_cuts, spec, sim, boxsize, ngrid_max, halo_dir, 
     - dict if save_results is False, containing metadata and computed data.
     - None if save_results is True, indicating successful saving of results.
     """
-
     if run_tests:
         test_computation();
         return 0;
@@ -105,6 +105,7 @@ def compute_regression_func(Mass_cuts, spec, sim, boxsize, ngrid_max, halo_dir, 
                             'Variance(beta)': computed_values['variance_beta_final'],
                             'beta[sum(w beta)/sum(w)]': computed_values['beta_final_way1'],
                             'beta[sum(xy)/sum(x^2)]': computed_values['beta_final_way2'],
+                            'beta[sum((x-x_avg)(y-y_avg)/sum((x-x_avg)^2)]': computed_values['beta_final_way3'],
                             'alpha[sum(alpha)/n]': computed_values['mean_alpha_final'],
                             'Variance(alpha)': computed_values['var_alpha_final'],
                             'variance_sys': computed_values['variance_sys'],
@@ -118,6 +119,7 @@ def compute_regression_func(Mass_cuts, spec, sim, boxsize, ngrid_max, halo_dir, 
                             'Variance(beta)': computed_values['variance_beta_final'],
                             'beta[sum(w beta)/sum(w)]': computed_values['beta_final_way1'],
                             'beta[sum(xy)/sum(x^2)]': computed_values['beta_final_way2'],
+                            'beta[sum((x-x_avg)(y-y_avg)/sum((x-x_avg)^2)]': computed_values['beta_final_way3'],
                             'alpha[sum(alpha)/n]': computed_values['mean_alpha_final'],
                             'Variance(alpha)': computed_values['var_alpha_final'],
                             'variance_sys': computed_values['variance_sys'],
@@ -130,6 +132,7 @@ def compute_regression_func(Mass_cuts, spec, sim, boxsize, ngrid_max, halo_dir, 
                     'Variance(beta)': None,
                     'beta[sum(w beta)/sum(w)]': None,
                     'beta[sum(xy)/sum(x^2)]': None,
+                    'beta[sum(x-x_avg)(y-y_avg)/sum(x-x_avg)^2]': None,
                     'alpha[sum(alpha)/n]': None,
                     'Variance(alpha)': None,
                     'variance_sys': None,
@@ -241,6 +244,11 @@ def compute_values(data_set, variance_sys, n_h_threshold):
     """
     x_dot_y = [0.0]
     x_dot_x = [0.0]
+    xy = [0.0]
+    xx = [0.0]
+    sum_x = [0.0]
+    sum_y = [0.0]
+    n_h_tot = 0 # total number of halos within all sub-boxes that used for the computation
     sum_w_ijk = [0.0]
     sum_beta_w_ijk = [0.0]
     mean_alpha_final = [0.0]
@@ -249,6 +257,8 @@ def compute_values(data_set, variance_sys, n_h_threshold):
     variance_beta_final = [0.0]
     beta_final_way1 = [0.0]
     beta_final_way2 = [0.0]
+    beta_final_way3 = [0.0] # In this method we compute (Sum_over_halos x_i y_i - N y_bar x_bar)/(Sum_over_halos x_i x_i - N x_bar^2)
+    ### Note that we already have save Sum x_i y_i for all halos within each sub-box that satisfy threshhol > n_h, and also we have computed sum y_i and sum x_i, so we can compute y_bar and x_bar
     #
     if n_h_threshold < 3:
         raise ValueError("n_h_threshold must be at least 3. Having fewer than 3 halos in a sub-box is insufficient for computing variance. Please increase n_h_threshold to 3 or higher.")
@@ -258,6 +268,13 @@ def compute_values(data_set, variance_sys, n_h_threshold):
         if sub_box_data['n_h'] >= n_h_threshold:
             x_dot_y += sub_box_data['x_dot_y']
             x_dot_x += sub_box_data['x_dot_x']
+            ###
+            xy += sub_box_data['xy']
+            xx += sub_box_data['xx']
+            sum_x += sub_box_data['sum_x']
+            sum_y += sub_box_data['sum_y']
+            n_h_tot += sub_box_data['n_h'];
+
             w_ijk = 1. / (sub_box_data['variance_b'] + variance_sys) # variance_sys is the systematic part which is going to be find through iteration!
             sum_w_ijk += w_ijk # W_n = W_n-1 + w_ijk and W_n is Sum_i=1^n w_i
             sum_beta_w_ijk += (w_ijk * sub_box_data['b'])
@@ -274,6 +291,7 @@ def compute_values(data_set, variance_sys, n_h_threshold):
             variance_beta_final = 1.0 / sum_w_ijk
             beta_final_way1 = sum_beta_w_ijk / sum_w_ijk
             beta_final_way2 = x_dot_y / x_dot_x
+            beta_final_way3 = (xy - (sum_x * sum_y)/n_h_tot) / (xx - (sum_x * sum_x)/n_h_tot) # Note that y_bar = sum_y/n_h_tot, x_bar = sum_x/n_h_tot -->  n_h_tot * x_bar * y_bar = sum_x * sum_y/n_h_tot
 
     ####### Round two of loops
     mu = beta_final_way1;
@@ -308,6 +326,7 @@ def compute_values(data_set, variance_sys, n_h_threshold):
         'variance_beta_final': variance_beta_final,
         'beta_final_way1': beta_final_way1,
         'beta_final_way2': beta_final_way2,
+        'beta_final_way3': beta_final_way3,
         'mean_alpha_final': mean_alpha_final,
         'var_alpha_final': var_alpha_final,
         'variance_sys': variance_sys, # systematic variance for beta variation!

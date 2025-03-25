@@ -22,12 +22,14 @@ from library_snapshot import computation_xy
 #### The point is study the mass dependence and also understand whye it is non-zero for $\Lambda$CDM case. So we are going to compute v_bulk
 #### Based on Eq 30 of arXiv:1611.04589v2, the quantity that we really have to compute is  $\frac{\langle(\vec v_h - \vec v_{bulk}).(b_h + (\frac{M_h}{1.3 \times 10^{14}})^{0.85})\vec v_{h \nu, 16 } \rangle}{\langle x.x\rangle}, x =(b_h + (\frac{M_h}{1.3 \times 10^{14}})^{0.85})\vec v_{h \nu, 16 }$ where $v_{h \nu, 16 }$ is the relative difference between $v_{h \nu, 16 } = v_{\nu, 16 } - v_{h, 16 }$ in 16 Mpc/h and $v_h, v_{\nu}$ are both the bulk velocities. The point is that the non-zero variation of halos around their average velocity in each scale is due to the presence of massive neutrinos and the relative different between bulk velocity of massive neutrinos and halos are actually sourcing the non-zero variation of velocity of halos around their average velocity due to dynamical friction. This effect by definition should be 0 in $\Lambda$CDM by if instead of $v_{\nu h}$ we use another quantities like $v_{vh}$ might be non-zero and probably can be cumputed analytically. The point is the relation between $v_{vh}$ and  $v_{\nu h}$  is not always trivial, this can be measured through measuring correlation coefficent of different quantitie.
 
+## TODO: Important! Note that in the original method of beta, we need to compute x_i - <x>, where <x> means the average over all halos, which is not considered properly here! Need to be improved!
+
 
 #############
 ## Functions
 #############
 
-def perform_analysis(sims, specs, Mass_cuts, boxsize, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo=1., num_cores=1, cdm_analysis=False, nu_analysis=False, n_h_threshold = 3):
+def perform_analysis(sims, specs, Mass_cuts, boxsize, ngrid_max, halo_dir, save_path, ngrid_step, ngrid_list, coeff_halo=1., num_cores=1, cdm_analysis=True, nu_analysis=True, n_h_threshold = 3):
     """
     Main function to perform analysis for different combinations of simulation parameters.
     Parameters:
@@ -196,13 +198,18 @@ def analyze_ngrid(ngrid, save_path, metadata, spec, sim, boxsize, Mass_cut, pos_
             continue  # Optionally, you can skip this iteration if the key is missing
         n_h = len(halo_indices_in_box)
         condition_sub_box = np.array(halo_indices_in_box)
-        x_dot_y, x_dot_x, b, alpha, Variance_beta, n_h, store_sub_box = analyze_sub_box(sub_box_index, condition_sub_box, ngrid, sim, spec, Mass_cut, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, vel_halos, masses, biases, coeff_halo, n_h, cdm_analysis, nu_analysis)
+        
+        x_dot_y, x_dot_x, xy, xx, sum_x, sum_y, b, alpha, Variance_beta, n_h, store_sub_box = analyze_sub_box(sub_box_index, condition_sub_box, ngrid, sim, spec, Mass_cut, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, vel_halos, masses, biases, coeff_halo, n_h, cdm_analysis, nu_analysis)
             
         # Store sub-box specific data
         if store_sub_box:
             sub_box_data[tuple(sub_box_index)] = {
-                'x_dot_y': x_dot_y,
-                'x_dot_x': x_dot_x,
+                'x_dot_y': x_dot_y, # This is (x - <x>) (y - <y>) for all halos in a sub-box
+                'x_dot_x': x_dot_x, # This is (x - <x>)^2 for all halos in a sub-box
+                'xy': xy, # This is (\vec x . \vec y) for all halos in a sub-box 
+                'xx': xx, # This is (\vec x . \vec x) for all halos in a sub-box
+                'sum_x': sum_x, # This is \sum_i x_i for all halos in a sub-box, this is useful to compute final <x> which is the average of x overall halos in the simulations
+                'sum_y': sum_y, # This is  \sum_i y_i for all halos in a sub-box, this is useful to compute final <x> which is the average of x overall halos in the simulations
                 'b': b,
                 'alpha': alpha,
                 'variance_b': Variance_beta,
@@ -242,9 +249,9 @@ def analyze_sub_box(sub_box_index, condition_sub_box, ngrid, sim, spec, Mass_cut
     x_i_list, x_i_avg_list = compute_x_lists(f_h, f_h_avg, f_dot_v_h_average, v_nuh_cell, v_nuh2_i, v_c_cell, v_h_cell, v_ch_cell, v_cnu_cell, coeff_halo, cdm_analysis, nu_analysis)
 
     # Compute regression parameters and variance
-    x_dot_y, x_dot_x, b, alpha, Variance_beta, store_sub_box = compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell, n_h, sub_box_index, ngrid, sim, Mass_cut) 
+    x_dot_y, x_dot_x, xy, xx, sum_x, sum_y, b, alpha, Variance_beta, store_sub_box = compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell, n_h, sub_box_index, ngrid, sim, Mass_cut) 
 
-    return x_dot_y, x_dot_x, b, alpha, Variance_beta, n_h, store_sub_box
+    return x_dot_y, x_dot_x, xy, xx, sum_x, sum_y, b, alpha, Variance_beta, n_h, store_sub_box 
 
 def extract_sub_box_data(sim, sub_box_index, cdm_bulk_all, nu_bulk_all, halo_bulk_all, pos_halos, condition_sub_box, vel_halos, masses, biases, coeff_halo, cdm_analysis, nu_analysis):
     """
@@ -305,7 +312,7 @@ def extract_sub_box_data(sim, sub_box_index, cdm_bulk_all, nu_bulk_all, halo_bul
 def compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell, n_h, sub_box_index, ngrid, sim, Mass_cut):
     """
     Compute regression parameters.
-
+# x_dot_y, x_dot_x, xy, xx, sum_x, sum_y, b, alpha, Variance_beta, n_h, store_sub_box 
     Parameters:
     - x_i_list (list): List of x_i arrays.
     - x_i_avg_list (list): List of average x_i arrays.
@@ -314,8 +321,12 @@ def compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell
     - n_h (int): Number of halos.
 
     Returns:
-    - x_dot_y (float): Dot product of x and y.
-    - x_dot_x (float): Dot product of x and x.
+    - x_dot_y (float): Dot product of x - <x> and y <y>.
+    - x_dot_x (float): Dot product of x -<x> and x -<x>.
+    - xy (float): Dot product of x and y (without subtracting averages)
+    - xx (float): Dot product of x and x (without subtracting averages)
+    - sum_x (float): summing over all x_i of all halos withing a sub-box
+    - sum_y (float): summing over all y_i of all halos withing a sub-box
     - b (float): Slope of the regression line.
     - alpha (array): Intercept of the regression line.
     - Variance_beta (float): Variance of the slope.
@@ -326,6 +337,12 @@ def compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell
 
     x_dot_y_list = []
     x_dot_x_list = []
+    ######
+    xy_list = []
+    xx_list = []
+    sum_x_list = []
+    sum_y_list = []
+    #####
     b_list = []
     alpha_list = []
     Variance_beta_list = []
@@ -335,6 +352,13 @@ def compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell
         x_minus_xavg = x_i - x_i_avg  # x-<x>; N*3 array
         x_dot_y = np.sum(np.sum(y_minus_yavg * x_minus_xavg, axis=1))  # (y-<y>).(x-<x>) this sum is the same as np.sum((x_minus_xavg * y_minus_yavg)[:,:])
         x_dot_x = np.sum(np.sum(x_minus_xavg * x_minus_xavg, axis=1))  # (x - <x>)(x-<x>)
+
+        #### For new beta computation
+        xy = np.sum(np.sum(y_minus_yavg * x_i, axis=1))  # (y.x this sum is the same as np.sum((x * y)[:,:])
+        xx = np.sum(np.sum(x_i * x_i, axis=1))  # (x.x this sum is the same as np.sum((x * x)[:,:])
+        sum_x = np.sum(np.sum(x_i, axis=1)) # sum of x_i
+        sum_y = np.sum(np.sum(y_minus_yavg, axis=1)) # sum of y_i which is actually y_i - <y>|over sub-box    
+        
         if (x_dot_x == 0.):
             print(f"WARNING: The coefficient in the regression cannot be calculated! Investigate what's going on! sub_box_index: {sub_box_index}, ngrid: {ngrid}, sim: {sim}, Mass_cut: {Mass_cut:.2e}, this sub-box is excluded!")
             store_sub_box = False
@@ -345,11 +369,21 @@ def compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell
         # alpha = np.mean(np.mean(np.transpose(y_minus_yavg - b * x_i_avg), axis=1)), but at the end it doesn't make any difference! Note that \alpha should be of order b*x_bar e.g., <v_h>
         x_dot_y_list.append(x_dot_y)
         x_dot_x_list.append(x_dot_x)
+        xy_list.append(xy)
+        xx_list.append(xx)
+        sum_x_list.append(sum_x)
+        sum_y_list.append(sum_y)
         b_list.append(b)
         alpha_list.append(alpha)
 
     x_dot_y = np.array(x_dot_y_list)
     x_dot_x = np.array(x_dot_x_list)
+    ####
+    xy = np.array(xy_list)
+    xx = np.array(xx_list)    
+    sum_x = np.array(sum_x_list)
+    sum_y = np.array(sum_y_list)
+    ####
     b = np.array(b_list)
     alpha = np.array(alpha_list)
         # Compute variance beta if store_sub_box is still True
@@ -370,8 +404,7 @@ def compute_regression_params(x_i_list, x_i_avg_list, vel_halos_subBox, v_h_cell
             # Variance_beta = sum_errors2 / ((n_h-2) * (n_h-1) * np.sum(x_dot_x[i]))  # Variance of the slope/ n_h-2 is from the formula! 
                 Variance_beta_list.append(Variance_beta)
                 
-    return x_dot_y, x_dot_x, b, alpha, np.array(Variance_beta_list), store_sub_box
-
+    return x_dot_y, x_dot_x, xy, xx, sum_x, sum_y, b, alpha, np.array(Variance_beta_list), store_sub_box 
 
 
 def compute_x_lists(f_h, f_h_avg, f_dot_v_h_average, v_nuh_cell, v_nuh2_i, v_c_cell, v_h_cell, v_ch_cell, v_cnu_cell, coeff_halo, cdm_analysis, nu_analysis):
@@ -501,10 +534,30 @@ def load_data_bulk(file_path, ngrid, sim, spec, Mass_cut, cdm_analysis=False, nu
         # sim_type+'_L_'+str(boxsize)+'_Ngrid_'+str(N_pcl_sim)+'_'+species+f'_mass_{mass_limit:.1e}'
         cdm_path = f"{file_path}/cdm/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_cdm.pickle"
         nu_path = f"{file_path}/nu/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_nu.pickle" if sim != "0.0ev" else ""
+    # else:
+    #     # cdm_path = f"{file_path}/cdm/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_snap002_cdm.pickle"
+    #     # nu_path = f"{file_path}/nu/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_snap002_ncdm0.pickle" if sim != "0.0ev" else ""
+    #     cdm_path = f"{file_path}/cdm/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_cdm.pickle"
+    #     nu_path = f"{file_path}/nu/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_nu.pickle" if sim != "0.0ev" else ""
+    #     halo_all_path = f"{file_path}/{convert_mass_cuts([Mass_cut])[0]}/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_halo_mass_{Mass_cut:.1e}.pickle"
+    # for path in [cdm_path, nu_path] if cdm_analysis or nu_analysis else []:
+    #     if path and not os.path.exists(path):
+    #         print(f"Warning: {path} doesn't exist.")
     else:
-        cdm_path = f"{file_path}/cdm/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_snap002_cdm.pickle"
-        nu_path = f"{file_path}/nu/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_snap002_ncdm0.pickle" if sim != "0.0ev" else ""
         halo_all_path = f"{file_path}/{convert_mass_cuts([Mass_cut])[0]}/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_halo_mass_{Mass_cut:.1e}.pickle"
+
+        # Preferred paths
+        cdm_path = f"{file_path}/cdm/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_cdm.pickle"
+        nu_path = f"{file_path}/nu/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_nu.pickle" if sim != "0.0ev" else ""
+
+        # Check if preferred paths exist, otherwise use alternative paths
+        if not os.path.exists(cdm_path):
+            cdm_path = f"{file_path}/cdm/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_snap002_cdm.pickle"
+
+        if nu_path and not os.path.exists(nu_path):
+            nu_path = f"{file_path}/nu/output/data_ngrid_{ngrid}_sim_{sim}_{spec}_snap002_ncdm0.pickle" if sim != "0.0ev" else ""
+
+    # Check existence of paths and print warnings if they don't exist
     for path in [cdm_path, nu_path] if cdm_analysis or nu_analysis else []:
         if path and not os.path.exists(path):
             print(f"Warning: {path} doesn't exist.")
