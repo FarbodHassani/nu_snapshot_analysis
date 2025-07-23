@@ -198,13 +198,18 @@ def compute_dot_products(neutrino_velocity, halo_velocity, cdm_velocity):
     v_nu_dot_v_nu = np.dot(neutrino_velocity, neutrino_velocity)
     v_h_dot_v_h = np.dot(halo_velocity, halo_velocity)
     v_cdm_dot_v_cdm = np.dot(cdm_velocity, cdm_velocity)
-
+        # "v_nuh · v_nuh",
+        # "v_cdmh · v_cdmh",
+        # "v_nucdm · v_nucdm"
+    v_nuh_dot_v_nuh = np.dot(v_nu_h, v_nu_h)
+    v_cdmh_dot_v_cdmh = np.dot(v_cdm_h, v_cdm_h)
+    v_nucdm_dot_v_nucdm = np.dot(v_nu_cdm, v_nu_cdm)
     # Return the results as a flat array of scalar values
     return np.array([
         v_nu_dot_v_h, v_nu_dot_v_cdm, v_nuh_dot_v_h, v_nuh_dot_v_nu,
         v_nucdm_dot_v_cdm, v_nucdm_dot_v_nu, v_cdm_dot_v_h,
         v_cdmh_dot_v_h, v_cdmh_dot_v_cdm, v_nu_dot_v_nu,
-        v_h_dot_v_h, v_cdm_dot_v_cdm
+        v_h_dot_v_h, v_cdm_dot_v_cdm, v_nuh_dot_v_nuh, v_cdmh_dot_v_cdmh, v_nucdm_dot_v_nucdm
     ])
 import numpy as np
 def prepare_metadata(spec, sim, Mass_cut, directory, boxsize, ngrid_list, n_h_threshold): #(spec, sim, Mass_cut, save_path, boxsize, ngrid_list, n_h_threshold)
@@ -237,7 +242,10 @@ def prepare_metadata(spec, sim, Mass_cut, directory, boxsize, ngrid_list, n_h_th
         "v_cdmh · v_cdm",
         "v_nu · v_nu",
         "v_h · v_h",
-        "v_cdm · v_cdm"
+        "v_cdm · v_cdm",
+        "v_nuh · v_nuh",
+        "v_cdmh · v_cdmh",
+        "v_nucdm · v_nucdm"
     ]
 
     metadata = {
@@ -309,11 +317,11 @@ def analyze_and_save_for_ngrid(spec, sim, Mass_cut, ngrid_list, n_h_threshold, s
 
         num_sub_box = 0
         sub_box_data = halo_bulk_all['sub_box_data']
-        results = np.zeros(12)
+        results = np.zeros(15) # previously was 12
         for sub_box_key, sub_box_info in sub_box_data.items():
 
             if sub_box_key[0] < ngrid and sub_box_key[1] < ngrid and sub_box_key[2] < ngrid:
-                num_sub_box += 1
+                
     
                 # Calculate neutrino velocity based on the simulation condition
                 if sim != "0.0ev":
@@ -331,12 +339,15 @@ def analyze_and_save_for_ngrid(spec, sim, Mass_cut, ngrid_list, n_h_threshold, s
     
                 # Accumulate results
                 if (halo_count >= n_h_threshold):
+                    num_sub_box += 1
                     results += compute_dot_products(neutrino_velocity, halo_velocity, cdm_velocity)
 
         # After looping over all sub-boxes, store results for the current ngrid
         if ngrid not in data_store:
             data_store[ngrid] = {}
-        
+        #         "v_nuh · v_nuh",
+        # "v_cdmh · v_cdmh",
+        # "v_nucdm · v_nucdm"
         data_store[ngrid] = {
             'v_nu·v_h': results[0],
             'v_nu·v_cdm': results[1],
@@ -350,6 +361,9 @@ def analyze_and_save_for_ngrid(spec, sim, Mass_cut, ngrid_list, n_h_threshold, s
             'v_nu·v_nu': results[9],
             'v_h·v_h': results[10],
             'v_cdm·v_cdm': results[11],
+            'v_nuh·v_nuh': results[12],
+            'v_cdmh·v_cdmh': results[13],
+            'v_nucdm·v_nucdm': results[14],
             'num_sub_box_analyzed': num_sub_box
         }
 
