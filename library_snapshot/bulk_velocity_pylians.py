@@ -244,12 +244,12 @@ def process_cdm_nu_data_gadget(rank, file_path, bulk_species, ngrid, boxsize, nu
         if rank == 0:
             print(f"Nall in gadget 2 fromat is 0 and we are using number of particles explicitely to read the file through readsnap.read_block", flush=True)
         Nall = [0,num_pcl**3,0,0,0,0]
-        pos = readsnap.read_block(snapshot, "POS ", 1, True,  0, False, False, Nall)
+        pos = readsnap.read_block(snapshot, "POS ", 1, True,  0, False, False, Nall)/1000.  # Internal unit is Kpc/h and we should convert to Mpc/h
         vel = readsnap.read_block(snapshot, "VEL ", 1, True,  0, False, False, Nall)
     else:
         if rank == 0:
             print(f"Nall in gadget 2 fromat is non zero and we are using readgadget.read_block function", flush=True)
-        pos = readsnap.read_block(snapshot, "POS ", 1, True,  0, False, False, Nall)
+        pos = readsnap.read_block(snapshot, "POS ", 1, True,  0, False, False, Nall)/1000. # Internal unit is Kpc/h and we should convert to Mpc/h
         vel = readsnap.read_block(snapshot, "VEL ", 1, True,  0, False, False, Nall)
     print(f"{np.shape(pos)[0]} number of particles loaded which should be consistent with {Nall} from gadget 2 header or the third power of {num_pcl}","\n")
     axis     = 0       #no RSD
