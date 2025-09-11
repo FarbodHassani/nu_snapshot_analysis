@@ -211,7 +211,8 @@ def compute_dot_products(neutrino_velocity, halo_velocity, cdm_velocity):
         v_cdmh_dot_v_h, v_cdmh_dot_v_cdm, v_nu_dot_v_nu,
         v_h_dot_v_h, v_cdm_dot_v_cdm, v_nuh_dot_v_nuh, v_cdmh_dot_v_cdmh, v_nucdm_dot_v_nucdm
     ])
-import numpy as np
+
+
 def prepare_metadata(spec, sim, Mass_cut, directory, boxsize, ngrid_list, n_h_threshold): #(spec, sim, Mass_cut, save_path, boxsize, ngrid_list, n_h_threshold)
     """
     Prepare metadata for the analysis.

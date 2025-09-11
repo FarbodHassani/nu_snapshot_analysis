@@ -83,8 +83,12 @@ def loop_ngrid_list(rank, boxsize, num_pcl, sim_type, spec, ngrid_min, ngrid_max
         start_mem = psutil.Process().memory_info().rss
         metadata = compute_metadata(boxsize, num_pcl, sim_type, spec, ngrid, ngrid_min, ngrid_max, ngrid_step, size, bulk_species, file_path, mass_limit, save_path)
         sub_box_data = {}
+        print(type_data, bulk_species)
         if type_data == "JD":
-            process_data_JD(rank, bulk_species, sim_type, mass_limit, file_path, ngrid, boxsize, sub_box_data)
+            if bulk_species == 'halo':
+                process_data_JD_halos(bulk_species, sim_type, mass_limit, file_path, ngrid, boxsize, sub_box_data)
+            else:
+                process_cdm_nu_JD(bulk_species, sim_type, file_path, ngrid, boxsize, sub_box_data)
         elif type_data == "normal":
             if bulk_species == 'halo':
                 process_halo_data(rank, file_path, mass_limit, ngrid, boxsize, sub_box_data)
@@ -279,68 +283,91 @@ def process_cdm_nu_data_gadget(rank, file_path, bulk_species, ngrid, boxsize, nu
     sub_box_data['P_z'] = Vz
 
 # Function to load JD simulation data
-def process_data_JD(rank, bulk_species, sim_type, mass_limit, file_path, ngrid, boxsize, sub_box_data):
+def process_data_JD_halos(bulk_species, sim_type, mass_limit, file_path, ngrid, boxsize, sub_box_data):
+    pos, vel, masses = load_data_JD_all(bulk_species, file_path, sim_type, mass_limit)
+    
+    bias_h = np.float32(bias.haloBias(masses, model='sheth01', z=0.0, mdef='200m'))
+    print(f"{np.shape(pos)[0]} number of haloes loaded","\n")
+    axis     = 0       #no RSD
+    MAS      = 'CIC'   #it assumes the density constrast and velocities have been generated with the same MAS
+    threads  = 8       #number of openmp threads
+    verbose = False 
+    rho = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
+    MASL.MA(pos, rho, boxsize, MAS, verbose=verbose)
+    print("Density field is computed!","\n") # Note that the density is not normalized to the box, and to make the density we need to divide by L^3, it's basically number counts with CIC method
 
-    # from ReadHalos import ReadHaloFile_lcdm, ReadHaloFile_data
-    # from ReadParticles import ReadParticleFile
-    rank_total = 512;
-    for rank_id in range(rank_total):
-        if bulk_species == 'halo':
-            if sim_type == "0.0ev":
-                input_file = file_path + "/0.000halo" + str(rank_id) + ".dat"
-                a = 1.
-                file_data = ReadHaloFile_lcdm(input_file, a)  # Assuming ReadHaloFile_lcdm is the function to read JD data
-                cond = (file_data[6] >= mass_limit)
-                masses = file_data[6][cond]
-                pos = np.vstack((file_data[0][cond], file_data[1][cond], file_data[2][cond])).T
-                vel = np.vstack((file_data[3][cond], file_data[4][cond], file_data[5][cond])).T
-            else:
-                input_file = file_path + "/0.000halo" + str(rank_id) + ".dat"
-                a = 1.
-                file_data = ReadHaloFile_data(input_file, a)  # Assuming ReadHaloFile_data is the function to read JD data
-                cond = (file_data[6] >= mass_limit)
-                masses = file_data[6][cond]
-                pos = np.vstack((file_data[0][cond], file_data[1][cond], file_data[2][cond])).T
-                vel = np.vstack((file_data[3][cond], file_data[4][cond], file_data[5][cond])).T
-            for pcl in range(np.shape(pos)[0]):
-                x_index = int(np.floor( (pos[pcl, 0]/boxsize) * ngrid ))
-                y_index = int(np.floor( (pos[pcl, 1]/boxsize) * ngrid ))
-                z_index = int(np.floor( (pos[pcl, 2]/boxsize) * ngrid ))
-                sub_box_index = (x_index, y_index, z_index)
-                
-                mass = masses[pcl]
-                bias_h = bias.haloBias(mass, model='sheth01', z=0.0, mdef='200m')
-                if sub_box_index not in sub_box_data:
-                    sub_box_data[sub_box_index] = {
-                        'sum_bulk_vel': 0.0,
-                        'sum_b_M': 0.0,
-                        'sum_b_M_vel_h': 0.0,
-                        'N': 0
-                    }
-                sub_box_data[sub_box_index]['sum_bulk_vel'] += vel[pcl]
-                sub_box_data[sub_box_index]['sum_b_M'] += (bias_h + (mass / (1.3 * 1.e14)) ** (0.85))
-                sub_box_data[sub_box_index]['sum_b_M_vel_h'] += (bias_h + (mass / (1.3 * 1.e14)) ** (0.85)) * vel[pcl]
-                sub_box_data[sub_box_index]['N'] += 1
-        else:
-            if bulk_species == 'cdm':
-                input_file = file_path + "/0.000xv" + str(rank_id) + ".dat"
-            elif bulk_species == 'nu':
-                input_file = file_path + "/0.000xv" + str(rank_id) + "_nu.dat"
-            file_data = ReadParticleFile(input_file)  # Assuming ReadParticleFile is the function to read JD data
-            pos = np.vstack((file_data[0], file_data[1], file_data[2])).T
-            vel = np.vstack((file_data[3], file_data[4], file_data[5])).T
-            for pcl in range(np.shape(pos)[0]):
-                x_index = int(np.floor( (pos[pcl, 0]/boxsize) * ngrid ))
-                y_index = int(np.floor( (pos[pcl, 1]/boxsize) * ngrid ))
-                z_index = int(np.floor( (pos[pcl, 2]/boxsize) * ngrid ))
-                sub_box_index = (x_index, y_index, z_index)
-                if sub_box_index not in sub_box_data:
-                    sub_box_data[sub_box_index] = {
-                        'sum_bulk_vel': 0.0,
-                        'N': 0
-                    }
-                sub_box_data[sub_box_index]['sum_bulk_vel'] += vel[pcl]
-                sub_box_data[sub_box_index]['N'] += 1
+    weight = (bias_h + (masses / (1.3 * 1.e14)) ** (0.85))
+    sum_b_M_field = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
+    MASL.MA(pos, sum_b_M_field, boxsize, MAS, W = weight, verbose=verbose)
+    print("sum_b_M_field field is computed!","\n")
+    ####
+    weight = vel[:,0]
+    Vx = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
+    MASL.MA(pos, Vx, boxsize, MAS, W = weight, verbose=verbose)
+
+    weight = vel[:,0] * (bias_h + (masses / (1.3 * 1.e14)) ** (0.85))
+    sum_b_M_vel_h_x_field = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
+    MASL.MA(pos, sum_b_M_vel_h_x_field, boxsize, MAS, W = weight, verbose=verbose)
+    #####
+    weight = vel[:,1]
+    Vy = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
+    MASL.MA(pos, Vy, boxsize, MAS, W = weight, verbose=verbose)
+
+    weight = vel[:,1] * (bias_h + (masses / (1.3 * 1.e14)) ** (0.85))
+    sum_b_M_vel_h_y_field = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
+    MASL.MA(pos, sum_b_M_vel_h_y_field, boxsize, MAS, W = weight, verbose=verbose)
+    
+    #####
+    weight = vel[:,2]
+    Vz = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
+    MASL.MA(pos, Vz,boxsize, MAS, W = weight, verbose=verbose)
+
+    weight = vel[:,1] * (bias_h + (masses / (1.3 * 1.e14)) ** (0.85))
+    sum_b_M_vel_h_z_field = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
+    MASL.MA(pos, sum_b_M_vel_h_z_field, boxsize, MAS, W = weight, verbose=verbose)
+    
+    print(f"All field are computed!","\n")
+
+    sub_box_data['density'] = rho
+    sub_box_data['sum_b_M'] = sum_b_M_field
+    sub_box_data['sum_b_M_vel_h_x'] = sum_b_M_vel_h_x_field
+    sub_box_data['sum_b_M_vel_h_y'] = sum_b_M_vel_h_y_field
+    sub_box_data['sum_b_M_vel_h_z'] = sum_b_M_vel_h_z_field
+    sub_box_data['P_x'] = Vx
+    sub_box_data['P_y'] = Vy
+    sub_box_data['P_z'] = Vz
+
+
+# Function to process cdm/nu data
+def process_cdm_nu_JD(bulk_species, sim_type, file_path, ngrid, boxsize, sub_box_data):
+
+    pos, vel = load_data_JD_all(bulk_species, file_path, sim_type)
+    axis     = 0       #no RSD
+    MAS      = 'CIC'   #it assumes the density constrast and velocities have been generated with the same MAS
+    threads  = 8       #number of openmp threads
+    verbose = False 
+    rho = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
+    # print("array hosting density field is defined!","\n")
+    MASL.MA(pos, rho, boxsize, MAS, verbose=verbose)
+    print("Density field is computed!","\n")
+    weight = vel[:,0]
+    Vx = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
+    MASL.MA(pos, Vx, boxsize,MAS, W = weight, verbose=verbose)
+    
+    weight = vel[:,1]
+    Vy = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
+    MASL.MA(pos, Vy, boxsize,MAS, W = weight, verbose=verbose)
+    
+    weight = vel[:,2]
+    Vz = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
+    MASL.MA(pos, Vz,boxsize, MAS, W = weight, verbose=verbose)
+    print(f"Momentum field is computed! and loaded number of particles is {np.shape(pos)[0]}","\n")
+
+    sub_box_data['density'] = rho
+    sub_box_data['P_x'] = Vx
+    sub_box_data['P_y'] = Vy
+    sub_box_data['P_z'] = Vz
+
 
 
 def simulation_def(boxsize, spec, N_pcl_sim, sim_type, species, mass_limit):
@@ -362,7 +389,7 @@ def load_data_halo(sim_path, mass_limit=1):
     mass =  halo_all[:,6]
     return pos.astype(np.float32), vel.astype(np.float32), mass.astype(np.float32) # return the loaded particles or halo data
 
-def load_data_JD_all(bulk_species, sim_path, mass_limit=1, ranknum=2):
+def load_data_JD_all(bulk_species, sim_path, sim_type, mass_limit=1, ranknum=512):
     # particles read
     pos_data = []
     vel_data = []
@@ -379,6 +406,8 @@ def load_data_JD_all(bulk_species, sim_path, mass_limit=1, ranknum=2):
             vel_data.append(vel_data_add)
         pos_data = np.vstack(pos_data)
         vel_data = np.vstack(vel_data)
+        return pos_data, vel_data
+        
     elif bulk_species == 'nu':
         for rank in range(ranknum):
             input_file = sim_path+"/0.000xv"+str(rank)+"_nu.dat"
@@ -391,22 +420,46 @@ def load_data_JD_all(bulk_species, sim_path, mass_limit=1, ranknum=2):
             vel_data.append(vel_data_add)
         pos_data = np.vstack(pos_data)
         vel_data = np.vstack(vel_data)
+        return pos_data, vel_data
+        
     elif bulk_species == 'halo':
-        mass_data = []
-        for rank in range(ranknum):
-            input_file = sim_path+"/0.000halo"+str(rank)+".dat"
-            a = 1.;
-            file_data = ReadHaloFile_data(input_file, a)
-            cond = (file_data[6] >= mass_limit)  # Assuming file_data[6] contains the values you want to compare
-            # Split the data into components and append to separate lists
-            pos_data_add = np.vstack((file_data[0][cond], file_data[1][cond], file_data[2][cond])).T
-            vel_data_add = np.vstack((file_data[3][cond], file_data[4][cond], file_data[5][cond])).T
-            pos_data.append(pos_data_add)
-            vel_data.append(vel_data_add)
 
-        pos_data = np.vstack(pos_data)
-        vel_data = np.vstack(vel_data) 
-    return pos_data, vel_data # return the loaded particles or halo data
+        mass_data = []
+        if sim_type == "0.0ev":
+            for rank in range(ranknum):
+                input_file = sim_path+"/0.000halo"+str(rank)+".dat"
+                a = 1.;
+                file_data = ReadHaloFile_lcdm(input_file, a)
+                cond = (file_data[6] >= mass_limit)  # Assuming file_data[6] contains the values you want to compare
+                # Split the data into components and append to separate lists
+                pos_data_add = np.vstack((file_data[0][cond], file_data[1][cond], file_data[2][cond])).T
+                vel_data_add = np.vstack((file_data[3][cond], file_data[4][cond], file_data[5][cond])).T
+                pos_data.append(pos_data_add)
+                vel_data.append(vel_data_add)
+                mass_data.append(file_data[6][cond])
+    
+            pos_data = np.vstack(pos_data)
+            vel_data = np.vstack(vel_data)
+            mass_data = np.concatenate(mass_data)
+            return pos_data, vel_data, mass_data
+        
+        else:    
+            for rank in range(ranknum):
+                input_file = sim_path+"/0.000halo"+str(rank)+".dat"
+                a = 1.;
+                file_data = ReadHaloFile_data(input_file, a)
+                cond = (file_data[6] >= mass_limit)  # Assuming file_data[6] contains the values you want to compare
+                # Split the data into components and append to separate lists
+                pos_data_add = np.vstack((file_data[0][cond], file_data[1][cond], file_data[2][cond])).T
+                vel_data_add = np.vstack((file_data[3][cond], file_data[4][cond], file_data[5][cond])).T
+                pos_data.append(pos_data_add)
+                vel_data.append(vel_data_add)
+                mass_data.append(file_data[6][cond])
+    
+            pos_data = np.vstack(pos_data)
+            vel_data = np.vstack(vel_data)
+            mass_data = np.concatenate(mass_data)
+            return pos_data, vel_data, mass_data
 
 
 def halo_selection(data_address, string, mass_limit, Remove_subhalo="no",  extra_columns=False):
