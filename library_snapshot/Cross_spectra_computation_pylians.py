@@ -121,13 +121,14 @@ def compute_cross_spectra(rank, file_path, bulk_species1, bulk_species2, spec, n
 
     power_data['metadata'] = data['metadata']
     power_data['metadata']['bulk_species'] = [bulk_species1, bulk_species2]
-    power_data['metadata']['information'] = ["k[h/Mpc], Pk_11[(km/s)^2*(Mpc/h)^3] is the momentum auto-power spectrum for field 1, Pk_22[(km/s)^2*(Mpc/h)^3]is the momentum auto-power spectrum for field 2, Pk_12[(km/s)^2*(Mpc/h)^3] will be the momentum cross-power spectrum"]
+    power_data['metadata']['information_spectra_p1_x_p2'] = ["k[h/Mpc], Pk_11[(km/s)^2*(Mpc/h)^3] is the momentum auto-power spectrum for field 1, Pk_22[(km/s)^2*(Mpc/h)^3]is the momentum auto-power spectrum for field 2, Pk_12[(km/s)^2*(Mpc/h)^3] will be the momentum cross-power spectrum"]
+    power_data['metadata']['information_spectra_v1_x_v2'] = ["k[h/Mpc], Pk1[(km/s)^2*(Mpc/h)^3] is the velocity auto-power spectrum for field 1, Pk2[(km/s)^2*(Mpc/h)^3]is the velocity auto-power spectrum for field 2, PkXv1v2[(km/s)^2*(Mpc/h)^3] will be the velocity cross-power spectrum"]
     density = data['sub_box_data']['density']
     density2 = data2['sub_box_data']['density']
     # Avoid division by zero by setting a small density value
     min_density = 1e-25  # Small positive value
     density = np.where(density <= 0, min_density, density)
-    density2 = np.where(density <= 0, min_density, density)
+    density2 = np.where(density2 <= 0, min_density, density2)
     delta = density / np.mean(density, dtype=np.float64) - 1.0
     delta2 = density2 / np.mean(density2, dtype=np.float64) - 1.0
 
@@ -159,8 +160,11 @@ def compute_cross_spectra(rank, file_path, bulk_species1, bulk_species2, spec, n
     # Pk_22 will be the momentum auto-power spectrum for field 2, defined as above, and with units of (km/s)^2*(Mpc/h)^3 in units of velocity field are (km/s)
     # Pk_12 will be the momentum cross-power spectrum, defined as above, and with units of (km/s)^2*(Mpc/h)^3 in units of velocity field are (km/s)
     k, Pk_11, Pk_22, Pk_12, Nmodes = PKL.XPk_vv(delta, Vx, Vy, Vz, delta2, Vx2, Vy2, Vz2, boxsize, axis, MAS, threads)
-    
     power_data['spectra_p1_x_p2'] = [k, Pk_11, Pk_22, Pk_12, Nmodes]
+
+    #### This is a function implemented by myself in Pylians; This givens the auto and cross power spectrum of velocities for field1 and field2
+    k, Pk1, Pk2, PkXv1v2, Nmodes = PKL.XPk_velvel(Vx, Vy, Vz, Vx2, Vy2, Vz2, boxsize, axis, MAS, threads)
+    power_data['spectra_v1_x_v2'] = [k, Pk1, Pk2, PkXv1v2, Nmodes]
     print(f"Spectra are computed!","\n")
     
 
