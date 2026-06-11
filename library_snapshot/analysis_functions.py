@@ -714,6 +714,41 @@ def load_halo_data(halo_dir, spec, sim, Mass_cut):
     ratio_number_halos = np.shape(masses)[0]/np.shape(mass_conditions)[0];
     return pos_halos, vel_halos, masses, biases, ratio_number_halos
 
+def load_halo_data_bins(halo_dir, spec, sim, Mass_bin, width):
+    """
+    Load halo data.
+
+    Parameters:
+    - halo_dir (str): Directory path of the halo data.
+    - spec (str): Specification identifier.
+    - sim (str): Simulation identifier.
+    - Mass_cut (float): Mass cut value.
+
+    Returns:
+    - pos_halos (array): Positions of halos.
+    - vel_halos (array): Velocities of halos.
+    - masses (array): Masses of halos.
+    - biases (array): Biases of halos.
+    - ratio_number_halos (float): The ratio of the number of halos satisfying the mass cut 
+      to the total number of halos.
+    """
+    halo_cat = np.loadtxt(halo_dir+spec+"/"+sim+"/output/halos/out_2.list") # Loading the full halo catalogue to loop over each halo
+    exponent = np.floor(np.log10(Mass_cut))
+    coefficient = Mass_cut / (10**exponent)
+
+    # Compute lower and upper bounds
+    lower = (coefficient - width) * 10**exponent
+    upper = (coefficient + width) * 10**exponent
+
+    # Define the mask condition for selecting halos in this mass range
+    mass_conditions = (halo_cat[:, 20] >= lower) & (halo_cat[:, 20] <= upper)           
+    halo_cat = halo_cat[mass_conditions]  # applying the mass condition
+    pos_halos = halo_cat[:,8:11];
+    vel_halos = halo_cat[:,11:14];
+    masses = halo_cat[:,20];
+    biases = bias.haloBias(masses, model = 'sheth01', z = 0.0, mdef = '200m')
+    ratio_number_halos = np.shape(masses)[0]/np.shape(mass_conditions)[0];
+    return pos_halos, vel_halos, masses, biases, ratio_number_halos
 
 def prepare_metadata(spec, sim, Mass_cut, ratio_number_halos, halo_dir, boxsize, ngrid, coeff_halo, cdm_analysis, nu_analysis, n_h_threshold):
     """
