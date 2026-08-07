@@ -369,50 +369,208 @@ def print_total_usage(rank, start_time_all, start_mem_all):
         print_usage(start_time_all, start_mem_all, '- Total time and memory!')
 
 # Function to process cdm/nu data
-def process_cdm_nu_data_gadget(rank, file_path, bulk_species, ngrid, boxsize, num_pcl, sub_box_data):
+
+def process_cdm_nu_data_gadget(
+    rank,
+    file_path,
+    bulk_species,
+    ngrid,
+    boxsize,
+    num_pcl,
+    sub_box_data,
+):
 
     snapshot = file_path
-    header   = readsnap.snapshot_header(snapshot)
-    Nall     = header.nall 
-    # ptype    = header.format #[1](CDM), [2](neutrinos) or [1,2](CDM+neutrinos)
+    header = readsnap.snapshot_header(snapshot)
+    Nall = np.asarray(header.nall)
 
     if np.all(Nall == 0) or num_pcl >= 2048:
         if rank == 0:
-            print(f"Nall in gadget 2 fromat is 0 and we are using number of particles explicitely to read the file through readsnap.read_block", flush=True)
-        Nall = [0,num_pcl**3,0,0,0,0]
-        pos = readsnap.read_block(snapshot, "POS ", 1, True,  0, False, False, Nall)/1000.  # Internal unit is Kpc/h and we should convert to Mpc/h
-        vel = readsnap.read_block(snapshot, "VEL ", 1, True,  0, False, False, Nall)
+            print(
+                "Nall in Gadget-2 format is zero, or num_pcl >= 2048. "
+                "Using the explicitly supplied particle number in "
+                "readsnap.read_block.",
+                flush=True,
+            )
+
+        Nall = np.array(
+            [0, int(num_pcl) ** 3, 0, 0, 0, 0],
+            dtype=np.int64,
+        )
     else:
         if rank == 0:
-            print(f"Nall in gadget 2 fromat is non zero and we are using readgadget.read_block function", flush=True)
-        pos = readsnap.read_block(snapshot, "POS ", 1, True,  0, False, False, Nall)/1000. # Internal unit is Kpc/h and we should convert to Mpc/h
-        vel = readsnap.read_block(snapshot, "VEL ", 1, True,  0, False, False, Nall)
-    print(f"{np.shape(pos)[0]} number of particles loaded which should be consistent with {Nall} from gadget 2 header or the third power of {num_pcl}","\n")
-    axis     = 0       #no RSD
-    MAS      = 'CIC'   #it assumes the density constrast and velocities have been generated with the same MAS
-    threads  = 8       #number of openmp threads
-    verbose = False 
-    rho = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
-    # print("array hosting density field is defined!","\n")
-    MASL.MA(pos, rho, boxsize, MAS, verbose=verbose)
-    print("Density field is computed!","\n")
-    weight = vel[:,0]
-    Vx = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
-    MASL.MA(pos, Vx, boxsize,MAS, W = weight, verbose=verbose)
-    
-    weight = vel[:,1]
-    Vy = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
-    MASL.MA(pos, Vy, boxsize,MAS, W = weight, verbose=verbose)
-    
-    weight = vel[:,2]
-    Vz = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
-    MASL.MA(pos, Vz,boxsize, MAS, W = weight, verbose=verbose)
-    print(f"Momentum field is computed! and loaded number of particles is {np.shape(pos)[0]} which should be consistent with {Nall}","\n")
+            print(
+                "Nall in Gadget-2 format is non-zero. "
+                "Using the particle counts from the snapshot header.",
+                flush=True,
+            )
 
-    sub_box_data['density'] = rho
-    sub_box_data['P_x'] = Vx
-    sub_box_data['P_y'] = Vy
-    sub_box_data['P_z'] = Vz
+    # Read positions and immediately ensure single precision.
+    # astype(copy=False) avoids a copy when readsnap already returns float32.
+    pos = readsnap.read_block(
+        snapshot,
+        "POS ",
+        1,
+        True,
+        0,
+        False,
+        False,
+        Nall,
+    )
+    pos = np.asarray(pos).astype(np.float32, copy=False)
+
+    # Convert kpc/h to Mpc/h in place to avoid constructing another
+    # full particle array.
+    pos *= np.float32(1.0e-3)
+
+    # Read velocities and ensure single precision.
+    vel = readsnap.read_block(
+        snapshot,
+        "VEL ",
+        1,
+        True,
+        0,
+        False,
+        False,
+        Nall,
+    )
+    vel = np.asarray(vel).astype(np.float32, copy=False)
+
+    number_of_particles = pos.shape[0]
+
+    if rank == 0:
+        print(
+            f"{number_of_particles} particles loaded. "
+            f"This should be consistent with Nall={Nall} or num_pcl^3.",
+            flush=True,
+        )
+        print(
+            f"Position dtype: {pos.dtype}, velocity dtype: {vel.dtype}",
+            flush=True,
+        )
+
+    if pos.ndim != 2 or pos.shape[1] != 3:
+        raise ValueError(
+            f"Expected position array with shape (N, 3), got {pos.shape}."
+        )
+
+    if vel.ndim != 2 or vel.shape[1] != 3:
+        raise ValueError(
+            f"Expected velocity array with shape (N, 3), got {vel.shape}."
+        )
+
+    if pos.shape[0] != vel.shape[0]:
+        raise ValueError(
+            "Position and velocity arrays contain different numbers of "
+            f"particles: {pos.shape[0]} and {vel.shape[0]}."
+        )
+
+    MAS = "CIC"
+    verbose = False
+    grid_shape = (ngrid, ngrid, ngrid)
+
+    rho = np.zeros(grid_shape, dtype=np.float32)
+    MASL.MA(
+        pos,
+        rho,
+        boxsize,
+        MAS,
+        verbose=verbose,
+    )
+
+    if rank == 0:
+        print("Density field is computed.", flush=True)
+
+    Vx = np.zeros(grid_shape, dtype=np.float32)
+    MASL.MA(
+        pos,
+        Vx,
+        boxsize,
+        MAS,
+        W=vel[:, 0],
+        verbose=verbose,
+    )
+
+    Vy = np.zeros(grid_shape, dtype=np.float32)
+    MASL.MA(
+        pos,
+        Vy,
+        boxsize,
+        MAS,
+        W=vel[:, 1],
+        verbose=verbose,
+    )
+
+    Vz = np.zeros(grid_shape, dtype=np.float32)
+    MASL.MA(
+        pos,
+        Vz,
+        boxsize,
+        MAS,
+        W=vel[:, 2],
+        verbose=verbose,
+    )
+
+    if rank == 0:
+        print(
+            "Momentum fields are computed. "
+            f"Loaded particle count: {number_of_particles}.",
+            flush=True,
+        )
+
+    # Release the very large particle arrays before returning.
+    del pos
+    del vel
+
+    sub_box_data["density"] = rho
+    sub_box_data["P_x"] = Vx
+    sub_box_data["P_y"] = Vy
+    sub_box_data["P_z"] = Vz
+
+# def process_cdm_nu_data_gadget(rank, file_path, bulk_species, ngrid, boxsize, num_pcl, sub_box_data):
+
+#     snapshot = file_path
+#     header   = readsnap.snapshot_header(snapshot)
+#     Nall     = header.nall 
+#     # ptype    = header.format #[1](CDM), [2](neutrinos) or [1,2](CDM+neutrinos)
+
+#     if np.all(Nall == 0) or num_pcl >= 2048:
+#         if rank == 0:
+#             print(f"Nall in gadget 2 fromat is 0 and we are using number of particles explicitely to read the file through readsnap.read_block", flush=True)
+#         Nall = [0,num_pcl**3,0,0,0,0]
+#         pos = readsnap.read_block(snapshot, "POS ", 1, True,  0, False, False, Nall)/1000.  # Internal unit is Kpc/h and we should convert to Mpc/h
+#         vel = readsnap.read_block(snapshot, "VEL ", 1, True,  0, False, False, Nall)
+#     else:
+#         if rank == 0:
+#             print(f"Nall in gadget 2 fromat is non zero and we are using readgadget.read_block function", flush=True)
+#         pos = readsnap.read_block(snapshot, "POS ", 1, True,  0, False, False, Nall)/1000. # Internal unit is Kpc/h and we should convert to Mpc/h
+#         vel = readsnap.read_block(snapshot, "VEL ", 1, True,  0, False, False, Nall)
+#     print(f"{np.shape(pos)[0]} number of particles loaded which should be consistent with {Nall} from gadget 2 header or the third power of {num_pcl}","\n")
+#     axis     = 0       #no RSD
+#     MAS      = 'CIC'   #it assumes the density constrast and velocities have been generated with the same MAS
+#     threads  = 8       #number of openmp threads
+#     verbose = False 
+#     rho = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
+#     # print("array hosting density field is defined!","\n")
+#     MASL.MA(pos, rho, boxsize, MAS, verbose=verbose)
+#     print("Density field is computed!","\n")
+#     weight = vel[:,0]
+#     Vx = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
+#     MASL.MA(pos, Vx, boxsize,MAS, W = weight, verbose=verbose)
+    
+#     weight = vel[:,1]
+#     Vy = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
+#     MASL.MA(pos, Vy, boxsize,MAS, W = weight, verbose=verbose)
+    
+#     weight = vel[:,2]
+#     Vz = np.zeros((ngrid,ngrid,ngrid), dtype=np.float32)
+#     MASL.MA(pos, Vz,boxsize, MAS, W = weight, verbose=verbose)
+#     print(f"Momentum field is computed! and loaded number of particles is {np.shape(pos)[0]} which should be consistent with {Nall}","\n")
+
+#     sub_box_data['density'] = rho
+#     sub_box_data['P_x'] = Vx
+#     sub_box_data['P_y'] = Vy
+#     sub_box_data['P_z'] = Vz
 
 # Function to load JD simulation data
 # Deprecated: JD halos are now cached in loop_ngrid_list() and processed with process_halo_arrays().
