@@ -1,33 +1,38 @@
 """
-Compute spectra for the one-sided CDM--halo response estimator.
+Extended CDM--halo--neutrino response and convergence analysis.
 
 Primitive CIC fields stored in the bulk-velocity files are
 
     n_a(x)   = sum_p W_CIC(x-x_p),
     P_a,i(x) = sum_p W_CIC(x-x_p) v_p,i.
 
-The reconstructed fields are
+Raw reconstructed fields:
 
     1 + delta_a = n_a / <n_a>,
     V_a         = P_a / n_a,
-    J_a         = P_a / <n_a> = (1+delta_a)V_a.
+    J_a         = P_a / <n_a>
+                = (1+delta_a)V_a.
 
-The one-sided response fields are
+Physically smoothed matter fields:
+
+    n_a^(R)   = W_R * n_a,
+    P_a,i^(R) = W_R * P_a,i,
+
+    V_a^(R)   = P_a,i^(R) / n_a^(R).
+
+Halo response fields:
 
     Y = (1+delta_h)(V_h-V_c)
       = J_h-(1+delta_h)V_c,
 
     X = (1+delta_h)(V_nu-V_c).
 
-The response coefficient is formed later in post-processing as
-
-    beta_h(k) = P_{delta_c,divY}(k) / P_{delta_c,divX}(k).
-
-The code uses a spectral FFT derivative for divY and divX, and Pylians for
-the scalar auto- and cross-spectra. Optional Pylians diagnostics save all
-density, current, and bulk-velocity spectra for the available species.
+The code computes raw and smoothed variants and several convergence
+diagnostics intended to isolate grid-resolution effects.
 """
 
+import gc
+import glob
 import os
 import pickle
 import sys
@@ -35,11 +40,19 @@ import time
 
 import numpy as np
 import psutil
+
 from mpi4py import MPI
+from scipy import fft as sfft
+
+
+# ---------------------------------------------------------------------------
+# Local libraries
+# ---------------------------------------------------------------------------
 
 sys.path.append(
     "/mn/stornext/u3/hassanif/neutrino_niayesh/Analysis/nu_code/"
 )
+
 sys.path.append(
     "/mn/stornext/u3/hassanif/neutrino_niayesh/Analysis/"
     "nu_code/library_snapshot"
@@ -48,13 +61,23 @@ sys.path.append(
 import Pk_library as PKL
 
 
-
 _COMPONENTS = ("x", "y", "z")
 
+
+# ===========================================================================
+# Basic I/O
+# ===========================================================================
+
 def load(filename):
-    """Load a pickle file."""
+    """Load one pickle file."""
+
     with open(filename, "rb") as handle:
         return pickle.load(handle)
+
+
+# ===========================================================================
+# Main driver
+# ===========================================================================
 
 def pairwise_power_spectra_pylians(
     boxsize,
@@ -70,41 +93,36 @@ def pairwise_power_spectra_pylians(
     save_path,
     save_density_diagnostics=True,
     save_species_diagnostics=True,
+    compute_convergence_diagnostics=True,
+    compute_smoothed_responses=True,
+    compute_all_smoothing_pairs=False,
+    fft_workers=4,
 ):
     """
-    Compute one-sided CDM--halo response spectra over a range of grids.
+    Compute raw/smoothed response spectra and convergence diagnostics.
 
     Parameters
     ----------
-    save_density_diagnostics : bool
-        Save compact density auto- and cross-spectra when the more complete
-        species diagnostics are not requested.
-    save_species_diagnostics : bool
-        Save Pylians density, current, and bulk-velocity auto- and
-        cross-spectra for every available species pair. This option implies
-        density diagnostics and requires constructing the sparse halo bulk
-        velocity for diagnostic use.
+    compute_all_smoothing_pairs : bool
+        If False:
+            compute raw,
+            CDM-smoothed-only,
+            neutrino-smoothed-only,
+            and Rc=Rnu variants.
 
-    Notes
-    -----
-    ``ngrid_max`` follows the Python ``range`` convention and is exclusive.
+        If True:
+            additionally compute all available (Rc,Rnu) combinations.
 
-    For ``sim_type == "0.0ev"``, the code adopts the convention
-
-    delta_nu = 0,
-    V_nu     = 0,
-    J_nu     = 0,
-
-    so that
-    
-        X_LCDM = -(1+delta_h)V_c.
-    
-    The same response spectra and beta estimator are then computed for LCDM
-    and for the massive-neutrino simulations.
+    fft_workers : int
+        Number of scipy.fft workers used for spectral divergences.
     """
 
     boxsize = float(boxsize)
-    validate_inputs(string, ngrid_step)
+
+    validate_inputs(
+        string,
+        ngrid_step,
+    )
 
     start_time_all = time.time()
     start_mem_all = psutil.Process().memory_info().rss
@@ -129,20 +147,33 @@ def pairwise_power_spectra_pylians(
         save_path=save_path,
         save_density_diagnostics=save_density_diagnostics,
         save_species_diagnostics=save_species_diagnostics,
+        compute_convergence_diagnostics=compute_convergence_diagnostics,
+        compute_smoothed_responses=compute_smoothed_responses,
+        compute_all_smoothing_pairs=compute_all_smoothing_pairs,
+        fft_workers=fft_workers,
     )
 
     comm.Barrier()
+
     if rank == 0:
+
         print_usage(
             start_time_all,
             start_mem_all,
             "- Total time and memory",
         )
+
         print(
-            "\n*********** All one-sided response spectra finished! ***********\n",
+            "\n*********** "
+            "All response/convergence spectra finished! "
+            "***********\n",
             flush=True,
         )
 
+
+# ===========================================================================
+# Ngrid MPI loop
+# ===========================================================================
 
 def loop_one_sided_spectra_computation(
     rank,
@@ -160,16 +191,36 @@ def loop_one_sided_spectra_computation(
     save_path,
     save_density_diagnostics,
     save_species_diagnostics,
+    compute_convergence_diagnostics,
+    compute_smoothed_responses,
+    compute_all_smoothing_pairs,
+    fft_workers,
 ):
-    """Split the requested grid sizes across MPI ranks."""
 
-    ngrid_list = list(range(ngrid_min, ngrid_max, ngrid_step))
-    ngrid_per_rank = np.array_split(ngrid_list, size)
+    ngrid_list = list(
+        range(
+            ngrid_min,
+            ngrid_max,
+            ngrid_step,
+        )
+    )
+
+    ngrid_per_rank = np.array_split(
+        ngrid_list,
+        size,
+    )
 
     for ngrid_value in ngrid_per_rank[rank]:
+
         ngrid = int(ngrid_value)
+
         start_time = time.time()
         start_mem = psutil.Process().memory_info().rss
+
+        print(
+            f"[rank {rank}] Starting ngrid={ngrid}",
+            flush=True,
+        )
 
         power_data = compute_joint_one_sided_spectra(
             file_path=file_path,
@@ -182,6 +233,16 @@ def loop_one_sided_spectra_computation(
             mass_width=mass_width,
             save_density_diagnostics=save_density_diagnostics,
             save_species_diagnostics=save_species_diagnostics,
+            compute_convergence_diagnostics=(
+                compute_convergence_diagnostics
+            ),
+            compute_smoothed_responses=(
+                compute_smoothed_responses
+            ),
+            compute_all_smoothing_pairs=(
+                compute_all_smoothing_pairs
+            ),
+            fft_workers=fft_workers,
         )
 
         simulation = simulation_def(
@@ -201,184 +262,13 @@ def loop_one_sided_spectra_computation(
             save_path=save_path,
         )
 
-def compute_response_decomposition_spectra(
-    h,
-    c,
-    nu,
-    delta_c,
-    full_response,
-    boxsize,
-):
-    """
-    Compute the two contributions to the driver and response cross-spectra.
+        del power_data
+        gc.collect()
 
-    The exact field decompositions are
 
-        X = X_unweighted + X_weighted,
-
-        X_unweighted = V_nu - V_c,
-        X_weighted   = delta_h (V_nu - V_c),
-
-    and
-
-        Y = Y_unweighted + Y_weighted,
-
-        Y_unweighted = V_h - V_c,
-        Y_weighted   = delta_h (V_h - V_c).
-
-    Because both the divergence and cross-spectrum with delta_c are linear,
-
-        P_delta_c,divX_weighted
-            = P_delta_c,divX_full
-            - P_delta_c,divX_unweighted,
-
-    and similarly for Y.
-
-    Therefore, only the unweighted vector fields need to be explicitly
-    constructed. This avoids constructing the weighted vector fields and
-    avoids recomputing the already available full spectra.
-    """
-
-    # ===============================================================
-    # X unweighted contribution
-    # ===============================================================
-
-    X_unweighted = build_X_unweighted_components(
-        c=c,
-        nu=nu,
-    )
-
-    div_X_unweighted = fft_divergence(
-        X_unweighted,
-        boxsize,
-    )
-
-    del X_unweighted
-
-    spec_X_unweighted = scalar_cross_spectrum(
-        delta_c,
-        div_X_unweighted,
-        boxsize,
-        MAS="None",
-    )
-
-    del div_X_unweighted
-
-    # ===============================================================
-    # Y unweighted contribution
-    # ===============================================================
-
-    Y_unweighted = build_Y_unweighted_components(
-        h=h,
-        c=c,
-    )
-
-    div_Y_unweighted = fft_divergence(
-        Y_unweighted,
-        boxsize,
-    )
-
-    del Y_unweighted
-
-    spec_Y_unweighted = scalar_cross_spectrum(
-        delta_c,
-        div_Y_unweighted,
-        boxsize,
-        MAS="None",
-    )
-
-    del div_Y_unweighted
-
-    # ===============================================================
-    # Verify that all spectra use exactly the same bins
-    # ===============================================================
-
-    assert_same_binning(
-        spec_X_unweighted,
-        spec_Y_unweighted,
-        labels=(
-            "delta-divX-unweighted",
-            "delta-divY-unweighted",
-        ),
-    )
-
-    assert_matching_k_and_modes(
-        reference_k=full_response["k_h_per_Mpc"],
-        reference_modes=full_response["Nmodes"],
-        test_k=spec_X_unweighted[0],
-        test_modes=spec_X_unweighted[4],
-        label="delta-divX-unweighted",
-    )
-
-    assert_matching_k_and_modes(
-        reference_k=full_response["k_h_per_Mpc"],
-        reference_modes=full_response["Nmodes"],
-        test_k=spec_Y_unweighted[0],
-        test_modes=spec_Y_unweighted[4],
-        label="delta-divY-unweighted",
-    )
-
-    # ===============================================================
-    # Obtain the weighted terms from the exact linear decomposition
-    # ===============================================================
-
-    P_delta_c_divX_full = np.asarray(
-        full_response["P_delta_c_divX"]
-    )
-
-    P_delta_c_divY_full = np.asarray(
-        full_response["P_delta_c_divY"]
-    )
-
-    P_delta_c_divX_unweighted = np.asarray(
-        spec_X_unweighted[3]
-    )
-
-    P_delta_c_divY_unweighted = np.asarray(
-        spec_Y_unweighted[3]
-    )
-
-    P_delta_c_divX_weighted = (
-        P_delta_c_divX_full
-        - P_delta_c_divX_unweighted
-    )
-
-    P_delta_c_divY_weighted = (
-        P_delta_c_divY_full
-        - P_delta_c_divY_unweighted
-    )
-
-    return {
-        "k_h_per_Mpc": np.asarray(
-            full_response["k_h_per_Mpc"]
-        ),
-        "Nmodes": np.asarray(
-            full_response["Nmodes"]
-        ),
-
-        "P_delta_c_divX_full": P_delta_c_divX_full,
-        "P_delta_c_divX_unweighted": (
-            P_delta_c_divX_unweighted
-        ),
-        "P_delta_c_divX_weighted": (
-            P_delta_c_divX_weighted
-        ),
-
-        "P_delta_c_divY_full": P_delta_c_divY_full,
-        "P_delta_c_divY_unweighted": (
-            P_delta_c_divY_unweighted
-        ),
-        "P_delta_c_divY_weighted": (
-            P_delta_c_divY_weighted
-        ),
-
-        "definitions": {
-            "X_unweighted": "V_nu-V_c",
-            "X_weighted": "delta_h*(V_nu-V_c)",
-            "Y_unweighted": "V_h-V_c",
-            "Y_weighted": "delta_h*(V_h-V_c)",
-        },
-    }
+# ===========================================================================
+# Main computation
+# ===========================================================================
 
 def compute_joint_one_sided_spectra(
     file_path,
@@ -390,14 +280,19 @@ def compute_joint_one_sided_spectra(
     mass_cut=1.0,
     mass_width=0.5,
     save_density_diagnostics=True,
-    save_species_diagnostics=False,
+    save_species_diagnostics=True,
+    compute_convergence_diagnostics=True,
+    compute_smoothed_responses=True,
+    compute_all_smoothing_pairs=False,
+    fft_workers=4,
 ):
-    """Load the primitive grids and compute the retained spectra."""
 
     is_lcdm = sim == "0.0ev"
 
-    # Load and reduce one species at a time so the full input pickles are not
-    # retained simultaneously in memory.
+    # ===================================================================
+    # Halo
+    # ===================================================================
+
     data_h = load_files_pickles(
         file_path=file_path,
         bulk_species="halo",
@@ -408,11 +303,17 @@ def compute_joint_one_sided_spectra(
         mass_cut=mass_cut,
         mass_width=mass_width,
     )
+
     h = build_halo_fields(
-        data_h,
-        build_velocity_diagnostics=save_species_diagnostics,
+        data_h
     )
+
     del data_h
+    gc.collect()
+
+    # ===================================================================
+    # CDM
+    # ===================================================================
 
     data_c = load_files_pickles(
         file_path=file_path,
@@ -424,15 +325,27 @@ def compute_joint_one_sided_spectra(
         mass_cut=mass_cut,
         mass_width=mass_width,
     )
-    c = build_matter_fields(data_c, field_label="cdm")
+
+    c = build_matter_fields(
+        data_c,
+        field_label="cdm",
+    )
+
     del data_c
+    gc.collect()
+
+    # ===================================================================
+    # Neutrinos
+    # ===================================================================
 
     if is_lcdm:
-        # LCDM convention requested here:
-        # delta_nu = 0, V_nu = 0, J_nu = 0.
-        nu = build_zero_neutrino_fields_like(c)
-    
+
+        nu = build_zero_neutrino_fields_like(
+            c
+        )
+
     else:
+
         data_nu = load_files_pickles(
             file_path=file_path,
             bulk_species="nu",
@@ -443,14 +356,21 @@ def compute_joint_one_sided_spectra(
             mass_cut=mass_cut,
             mass_width=mass_width,
         )
-    
+
         nu = build_matter_fields(
             data_nu,
             field_label="nu",
         )
-    
+
         del data_nu
+        gc.collect()
+
+    # ===================================================================
+    # Output
+    # ===================================================================
+
     power_data = {
+
         "metadata": build_metadata(
             spec=spec,
             sim=sim,
@@ -462,355 +382,421 @@ def compute_joint_one_sided_spectra(
             is_lcdm=is_lcdm,
             save_density_diagnostics=save_density_diagnostics,
             save_species_diagnostics=save_species_diagnostics,
+            compute_smoothed_responses=compute_smoothed_responses,
+            compute_convergence_diagnostics=(
+                compute_convergence_diagnostics
+            ),
+            compute_all_smoothing_pairs=(
+                compute_all_smoothing_pairs
+            ),
         ),
+
         "field_summary": {
             "halo": h["summary"],
             "cdm": c["summary"],
             "nu": nu["summary"],
         },
+
+        "available_velocity_fields": {
+            "cdm": {
+                "raw": True,
+                "smoothed": tuple(
+                    sorted_R_keys(
+                        c["smoothed"].keys()
+                    )
+                ),
+            },
+
+            "nu": {
+                "raw": True,
+                "smoothed": tuple(
+                    sorted_R_keys(
+                        nu["smoothed"].keys()
+                    )
+                ),
+                "lcdm_zero_field": bool(
+                    nu.get(
+                        "is_zero_neutrino",
+                        False,
+                    )
+                ),
+            },
+        },
     }
 
-    # First construct the physical response from untouched fields.
-    Y = build_Y_components(h, c)
-    div_Y = fft_divergence(Y, boxsize)
-    del Y
-    
-    X = build_X_components(h, c, nu)
-    div_X = fft_divergence(X, boxsize)
-    del X
-    
-    response_spectra = compute_one_sided_response_spectra(
-        delta_c=c["delta"],
-        div_Y=div_Y,
-        div_X=div_X,
-        boxsize=boxsize,
-        physical_neutrino_driver_available=not is_lcdm,
-        lcdm_zero_neutrino_convention=is_lcdm,
+    # ===================================================================
+    # Raw response
+    # ===================================================================
+
+    Y_raw = build_Y_variant(
+        h,
+        c,
     )
-    
-    power_data["one_sided_cdm_halo_response"] = response_spectra
-    
-    # The full response spectra are now saved, so the full divergence fields
-    # are no longer needed.
-    del div_X
-    del div_Y
-    
-    power_data["response_decomposition"] = (
-        compute_response_decomposition_spectra(
+
+    X_raw = build_X_variant(
+        h,
+        c,
+        nu,
+    )
+
+    div_Y_raw = fft_divergence(
+        Y_raw,
+        boxsize,
+        workers=fft_workers,
+    )
+
+    div_X_raw = fft_divergence(
+        X_raw,
+        boxsize,
+        workers=fft_workers,
+    )
+
+    del Y_raw
+    del X_raw
+
+    response_raw = (
+        compute_one_sided_response_spectra(
+            delta_c=c["delta"],
+            div_Y=div_Y_raw,
+            div_X=div_X_raw,
+            boxsize=boxsize,
+            physical_neutrino_driver_available=(
+                not is_lcdm
+            ),
+            lcdm_zero_neutrino_convention=(
+                is_lcdm
+            ),
+        )
+    )
+
+    power_data[
+        "one_sided_cdm_halo_response"
+    ] = response_raw
+
+    # ===================================================================
+    # Preserve old decomposition analysis
+    # ===================================================================
+
+    power_data[
+        "response_decomposition"
+    ] = compute_response_decomposition_spectra(
+        h=h,
+        c=c,
+        nu=nu,
+        delta_c=c["delta"],
+        full_response=response_raw,
+        boxsize=boxsize,
+        fft_workers=fft_workers,
+    )
+
+    # div_X_raw no longer needed.
+    del div_X_raw
+    gc.collect()
+
+    # ===================================================================
+    # Smoothed X/Y variants
+    #
+    # Keep div_Y_raw until these are complete because neutrino-only
+    # smoothing uses the same raw Y.
+    # ===================================================================
+
+    if compute_smoothed_responses:
+
+        power_data[
+            "response_variants"
+        ] = compute_response_variants(
             h=h,
             c=c,
             nu=nu,
             delta_c=c["delta"],
-            full_response=response_spectra,
+            div_Y_raw=div_Y_raw,
+            raw_response=response_raw,
             boxsize=boxsize,
+            is_lcdm=is_lcdm,
+            fft_workers=fft_workers,
+            compute_all_smoothing_pairs=(
+                compute_all_smoothing_pairs
+            ),
         )
-    )
-    
-    # Only afterward compute optional diagnostics.
-    if save_species_diagnostics:
-        power_data["species_diagnostics"] = (
-            compute_species_velocity_diagnostics(
-                h=h,
-                c=c,
-                nu=nu,
-                boxsize=boxsize,
-            )
-        )
-    elif save_density_diagnostics:
-        power_data["density_spectra"] = compute_density_diagnostics(
+
+    del div_Y_raw
+    gc.collect()
+
+    # ===================================================================
+    # Convergence tests
+    # ===================================================================
+
+    if compute_convergence_diagnostics:
+
+        power_data[
+            "convergence_diagnostics"
+        ] = compute_convergence_tests(
             h=h,
             c=c,
             nu=nu,
             boxsize=boxsize,
         )
-    
-    del h, c, nu
 
-    
+    # ===================================================================
+    # Existing optional diagnostics
+    # ===================================================================
+
+    if save_species_diagnostics:
+
+        power_data[
+            "species_diagnostics"
+        ] = compute_species_velocity_diagnostics(
+            h=h,
+            c=c,
+            nu=nu,
+            boxsize=boxsize,
+        )
+
+    elif save_density_diagnostics:
+
+        power_data[
+            "density_spectra"
+        ] = compute_density_diagnostics(
+            h=h,
+            c=c,
+            nu=nu,
+            boxsize=boxsize,
+        )
+
+    del h
+    del c
+    del nu
+
+    gc.collect()
+
     return power_data
 
 
-def compute_species_velocity_diagnostics(h, c, nu, boxsize):
+# ===========================================================================
+# Field construction
+# ===========================================================================
+
+def build_halo_fields(data):
     """
-    Compute Pylians density, current, and velocity spectra for all species.
+    Construct halo density, velocity and current.
 
-    For each available species a,
+        V_h = P_h / n_h
+        J_h = P_h / <n_h>
+            = (1+delta_h)V_h
 
-        J_a = (1+delta_a)V_a.
-
-    ``PKL.XPk_vv`` returns
-
-        P_{J_aJ_a}, P_{J_bJ_b}, P_{J_aJ_b},
-
-    while the user-provided ``PKL.XPk_velvel`` routine returns
-
-        P_{V_aV_a}, P_{V_bV_b}, P_{V_aV_b}.
-
-    These are full vector spectra. They are consistency diagnostics and do
-    not replace the scalar--divergence spectra used by the beta estimator.
-
-    Notes
-    -----
-    The halo velocity is reconstructed as P_h/n_h and set to zero in empty
-    cells. Current spectra involving halos are generally more robust than
-    bulk-velocity spectra involving halos.
-    """
-
-    species = {"h": h, "c": c}
-    if nu is not None:
-        species["nu"] = nu
-
-    validate_species_diagnostic_fields(species)
-
-    axis = 0
-    mas = "CIC"
-    threads = 1
-
-    out = {
-        "available_species": tuple(species.keys()),
-        "density_spectra": {},
-        "current_spectra": {},
-        "velocity_spectra": {},
-        "current_definition": "J_a=(1+delta_a)V_a.",
-        "current_note": (
-            "PKL.XPk_vv constructs the momentum/current fields internally "
-            "from delta_a and V_a."
-        ),
-        "velocity_note": (
-            "PKL.XPk_velvel returns full gridded bulk-velocity spectra."
-        ),
-        "longitudinal_note": (
-            "These full vector spectra contain longitudinal and transverse "
-            "power. They are not equal to divergence spectra."
-        ),
-        "halo_velocity_note": (
-            "V_h=P_h/n_h is set to zero in empty cells and should be treated "
-            "as a grid-dependent diagnostic. J_h=P_h/<n_h> is better defined."
-        ),
-    }
-
-    names = tuple(species.keys())
-
-    for i, name_a in enumerate(names):
-        for name_b in names[i:]:
-            field_a = species[name_a]
-            field_b = species[name_b]
-            pair_key = f"{name_a}_x_{name_b}"
-
-            delta_a = field_a["delta"]
-            delta_b = field_b["delta"]
-            velocity_a = tuple(
-                field_a[f"V_{comp}"] for comp in _COMPONENTS
-            )
-            velocity_b = tuple(
-                field_b[f"V_{comp}"] for comp in _COMPONENTS
-            )
-
-            # Density auto- and cross-spectrum.
-            density_result = scalar_cross_spectrum(
-                delta_a,
-                delta_b,
-                boxsize,
-                MAS="CIC",
-            )
-            density_entry = {
-                "k_h_per_Mpc": density_result[0],
-                f"P_delta_{name_a}_delta_{name_a}": density_result[1],
-                "Nmodes": density_result[4],
-            }
-            if name_a == name_b:
-                # For a self-pair, P11=P22=P12 up to roundoff. Store once.
-                density_entry[f"P_delta_{name_a}_delta_{name_a}"] = (
-                    density_result[1]
-                )
-            else:
-                density_entry.update(
-                    {
-                        f"P_delta_{name_b}_delta_{name_b}": (
-                            density_result[2]
-                        ),
-                        f"P_delta_{name_a}_delta_{name_b}": (
-                            density_result[3]
-                        ),
-                    }
-                )
-            out["density_spectra"][pair_key] = density_entry
-
-            # Current/momentum auto- and cross-spectra.
-            (
-                k_current,
-                p_ja_ja,
-                p_jb_jb,
-                p_ja_jb,
-                nmodes_current,
-            ) = PKL.XPk_vv(
-                delta_a.copy(),
-                velocity_a[0].copy(),
-                velocity_a[1].copy(),
-                velocity_a[2].copy(),
-                delta_b.copy(),
-                velocity_b[0].copy(),
-                velocity_b[1].copy(),
-                velocity_b[2].copy(),
-                float(boxsize),
-                axis,
-                mas,
-                threads,
-            )
-
-            current_entry = {
-                "k_h_per_Mpc": np.asarray(k_current),
-                f"P_J_{name_a}_J_{name_a}": np.asarray(p_ja_ja),
-                "Nmodes": np.asarray(nmodes_current),
-            }
-            if name_a != name_b:
-                current_entry.update(
-                    {
-                        f"P_J_{name_b}_J_{name_b}": np.asarray(p_jb_jb),
-                        f"P_J_{name_a}_J_{name_b}": np.asarray(p_ja_jb),
-                    }
-                )
-            out["current_spectra"][pair_key] = current_entry
-
-            # Bulk-velocity auto- and cross-spectra.
-            (
-                k_velocity,
-                p_va_va,
-                p_vb_vb,
-                p_va_vb,
-                nmodes_velocity,
-            ) = PKL.XPk_velvel(
-                velocity_a[0].copy(),
-                velocity_a[1].copy(),
-                velocity_a[2].copy(),
-                velocity_b[0].copy(),
-                velocity_b[1].copy(),
-                velocity_b[2].copy(),
-                float(boxsize),
-                axis,
-                mas,
-                threads,
-            )
-
-            velocity_entry = {
-                "k_h_per_Mpc": np.asarray(k_velocity),
-                f"P_V_{name_a}_V_{name_a}": np.asarray(p_va_va),
-                "Nmodes": np.asarray(nmodes_velocity),
-            }
-            if name_a != name_b:
-                velocity_entry.update(
-                    {
-                        f"P_V_{name_b}_V_{name_b}": np.asarray(p_vb_vb),
-                        f"P_V_{name_a}_V_{name_b}": np.asarray(p_va_vb),
-                    }
-                )
-            out["velocity_spectra"][pair_key] = velocity_entry
-
-            assert_matching_k_and_modes(
-                density_result[0],
-                density_result[4],
-                k_current,
-                nmodes_current,
-                label=f"density/current {pair_key}",
-            )
-            assert_matching_k_and_modes(
-                density_result[0],
-                density_result[4],
-                k_velocity,
-                nmodes_velocity,
-                label=f"density/velocity {pair_key}",
-            )
-
-    return out
-
-
-def validate_species_diagnostic_fields(species):
-    """Validate fields required by the optional Pylians diagnostics."""
-
-    reference_shape = next(iter(species.values()))["delta"].shape
-
-    for name, field in species.items():
-        if field["delta"].shape != reference_shape:
-            raise ValueError(
-                f"delta_{name} has shape {field['delta'].shape}; "
-                f"expected {reference_shape}."
-            )
-
-        for comp in _COMPONENTS:
-            key = f"V_{comp}"
-            if key not in field:
-                raise KeyError(
-                    f"Missing {key} for species {name}. Construct the halo "
-                    "velocity by enabling save_species_diagnostics."
-                )
-            if field[key].shape != reference_shape:
-                raise ValueError(
-                    f"{key} for species {name} has shape {field[key].shape}; "
-                    f"expected {reference_shape}."
-                )
-
-
-def build_halo_fields(data, build_velocity_diagnostics=False):
-    """
-    Construct halo density and normalized-current fields.
-
-    If ``build_velocity_diagnostics`` is true, also construct
-
-        V_h = P_h/n_h,
-
-    with V_h=0 in empty cells. The sparse halo velocity is only intended for
-    optional Pylians diagnostics. The response estimator itself uses J_h.
+    V_h is set to zero in cells with no halo CIC support.
     """
 
     sub = data["sub_box_data"]
-    density = np.asarray(sub["density"], dtype=np.float32)
-    mean_density = validate_mean_density(density, "halo")
+    metadata = data.get(
+        "metadata",
+        {},
+    )
+
+    density = np.asarray(
+        sub["density"],
+        dtype=np.float32,
+    )
+
+    mean_density = validate_mean_density(
+        density,
+        "halo",
+    )
+
     occupied = density > 0.0
 
-    one_plus_delta = (density / mean_density).astype(np.float32)
-    delta = (one_plus_delta - 1.0).astype(np.float32)
+    one_plus_delta = (
+        density / mean_density
+    ).astype(
+        np.float32
+    )
+
+    delta = (
+        one_plus_delta - 1.0
+    ).astype(
+        np.float32
+    )
+
+    summary = summarize_density(
+        density,
+        mean_density,
+        "halo",
+    )
+
+    total_halos_metadata = metadata.get(
+        "num_halos",
+        None,
+    )
+
+    summary.update(
+        {
+            "CIC_total_halo_weight": float(
+                np.sum(
+                    density,
+                    dtype=np.float64,
+                )
+            ),
+
+            "number_cells": int(
+                density.size
+            ),
+
+            "number_occupied_cells": int(
+                np.count_nonzero(
+                    occupied
+                )
+            ),
+
+            "occupied_cell_fraction": float(
+                np.mean(
+                    occupied
+                )
+            ),
+
+            "fraction_cells_CIC_weight_ge_1": float(
+                np.mean(
+                    density >= 1.0
+                )
+            ),
+
+            "fraction_cells_CIC_weight_ge_2": float(
+                np.mean(
+                    density >= 2.0
+                )
+            ),
+        }
+    )
+
+    if total_halos_metadata is not None:
+
+        summary[
+            "num_halos_metadata"
+        ] = int(
+            total_halos_metadata
+        )
+
+        summary[
+            "mean_halos_per_cell"
+        ] = (
+            float(
+                total_halos_metadata
+            )
+            / float(
+                density.size
+            )
+        )
 
     fields = {
         "label": "halo",
         "one_plus_delta": one_plus_delta,
         "delta": delta,
-        "summary": summarize_density(
-            density,
-            mean_density,
-            "halo",
-        ),
+        "summary": summary,
+        "smoothed": {},
+    }
+
+    primitive_sums = {
+        "density": float(
+            np.sum(
+                density,
+                dtype=np.float64,
+            )
+        )
     }
 
     for comp in _COMPONENTS:
-        p_comp = np.asarray(sub[f"P_{comp}"], dtype=np.float32)
 
-        fields[f"J_{comp}"] = (
+        p_comp = np.asarray(
+            sub[f"P_{comp}"],
+            dtype=np.float32,
+        )
+
+        J_comp = (
             p_comp / mean_density
-        ).astype(np.float32)
+        ).astype(
+            np.float32
+        )
 
-        if build_velocity_diagnostics:
-            v_comp = np.zeros_like(p_comp, dtype=np.float32)
-            np.divide(
+        V_comp = np.zeros_like(
+            p_comp,
+            dtype=np.float32,
+        )
+
+        np.divide(
+            p_comp,
+            density,
+            out=V_comp,
+            where=occupied,
+        )
+
+        fields[
+            f"J_{comp}"
+        ] = J_comp
+
+        fields[
+            f"V_{comp}"
+        ] = V_comp
+
+        primitive_sums[
+            f"P_{comp}"
+        ] = float(
+            np.sum(
                 p_comp,
-                density,
-                out=v_comp,
-                where=occupied,
+                dtype=np.float64,
             )
-            fields[f"V_{comp}"] = v_comp
+        )
+
+    fields[
+        "primitive_sums"
+    ] = primitive_sums
 
     return fields
 
 
-def build_matter_fields(data, field_label):
-    """Construct density contrast and coarse-grained matter velocity."""
+def build_matter_fields(
+    data,
+    field_label,
+):
+    """
+    Construct raw and Gaussian-smoothed matter fields.
 
-    sub = data["sub_box_data"]
-    density = np.asarray(sub["density"], dtype=np.float32)
-    mean_density = validate_mean_density(density, field_label)
+    Raw:
+        V = P/n
+        J = P/<n>
+
+    Smoothed:
+        V^(R) = P^(R)/n^(R).
+
+    Smoothed primitive fields themselves are NOT copied unnecessarily;
+    reconstructed velocities are held in the returned dictionary.
+    """
+
+    sub = data[
+        "sub_box_data"
+    ]
+
+    density = np.asarray(
+        sub["density"],
+        dtype=np.float32,
+    )
+
+    mean_density = validate_mean_density(
+        density,
+        field_label,
+    )
+
     occupied = density > 0.0
 
-    one_plus_delta = (density / mean_density).astype(np.float32)
-    delta = (one_plus_delta - 1.0).astype(np.float32)
+    one_plus_delta = (
+        density / mean_density
+    ).astype(
+        np.float32
+    )
+
+    delta = (
+        one_plus_delta - 1.0
+    ).astype(
+        np.float32
+    )
 
     fields = {
         "label": field_label,
@@ -821,43 +807,209 @@ def build_matter_fields(data, field_label):
             mean_density,
             field_label,
         ),
+        "smoothed": {},
+        "is_zero_neutrino": False,
     }
 
+    primitive_sums = {
+        "density": float(
+            np.sum(
+                density,
+                dtype=np.float64,
+            )
+        )
+    }
+
+    # ------------------------------------------------------------------
+    # Raw
+    # ------------------------------------------------------------------
+
     for comp in _COMPONENTS:
-        p_comp = np.asarray(sub[f"P_{comp}"], dtype=np.float32)
-        v_comp = np.zeros_like(p_comp, dtype=np.float32)
+
+        p_comp = np.asarray(
+            sub[f"P_{comp}"],
+            dtype=np.float32,
+        )
+
+        v_comp = np.zeros_like(
+            p_comp,
+            dtype=np.float32,
+        )
+
         np.divide(
             p_comp,
             density,
             out=v_comp,
             where=occupied,
         )
-        fields[f"V_{comp}"] = v_comp
+
+        fields[
+            f"V_{comp}"
+        ] = v_comp
+
+        fields[
+            f"J_{comp}"
+        ] = (
+            p_comp
+            / mean_density
+        ).astype(
+            np.float32
+        )
+
+        primitive_sums[
+            f"P_{comp}"
+        ] = float(
+            np.sum(
+                p_comp,
+                dtype=np.float64,
+            )
+        )
+
+    fields[
+        "primitive_sums"
+    ] = primitive_sums
+
+    # ------------------------------------------------------------------
+    # Smoothed primitive fields
+    # ------------------------------------------------------------------
+
+    smoothed_input = sub.get(
+        "smoothed",
+        {},
+    )
+
+    for R_key in sorted_R_keys(
+        smoothed_input.keys()
+    ):
+
+        smooth_data = (
+            smoothed_input[
+                R_key
+            ]
+        )
+
+        density_R = np.asarray(
+            smooth_data[
+                "density"
+            ],
+            dtype=np.float32,
+        )
+
+        occupied_R = (
+            density_R > 0.0
+        )
+
+        smooth = {
+            "summary": {
+                "mean_density": float(
+                    np.mean(
+                        density_R,
+                        dtype=np.float64,
+                    )
+                ),
+
+                "density_sum": float(
+                    np.sum(
+                        density_R,
+                        dtype=np.float64,
+                    )
+                ),
+
+                "empty_cell_fraction": float(
+                    np.mean(
+                        ~occupied_R
+                    )
+                ),
+            }
+        }
+
+        for comp in _COMPONENTS:
+
+            p_R = np.asarray(
+                smooth_data[
+                    f"P_{comp}"
+                ],
+                dtype=np.float32,
+            )
+
+            V_R = np.zeros_like(
+                p_R,
+                dtype=np.float32,
+            )
+
+            np.divide(
+                p_R,
+                density_R,
+                out=V_R,
+                where=occupied_R,
+            )
+
+            smooth[
+                f"V_{comp}"
+            ] = V_R
+
+            smooth[
+                f"P_sum_{comp}"
+            ] = float(
+                np.sum(
+                    p_R,
+                    dtype=np.float64,
+                )
+            )
+
+        fields[
+            "smoothed"
+        ][
+            R_key
+        ] = smooth
+
+    fields[
+        "summary"
+    ][
+        "available_smoothing_scales"
+    ] = tuple(
+        fields[
+            "smoothed"
+        ].keys()
+    )
 
     return fields
 
 
-def build_zero_neutrino_fields_like(reference_field):
+def build_zero_neutrino_fields_like(
+    reference_field,
+):
     """
-    Construct the LCDM convention
+    LCDM convention:
 
-        delta_nu = 0,
-        V_nu     = 0,
-        J_nu     = 0.
+        delta_nu = 0
+        V_nu = 0
+        J_nu = 0.
 
-    The same immutable zero grid is shared by all identically zero fields
-    to avoid unnecessary memory allocation.
+    A requested smoothing radius still corresponds to zero velocity.
     """
 
-    shape = reference_field["delta"].shape
+    shape = (
+        reference_field[
+            "delta"
+        ].shape
+    )
 
-    zero = np.zeros(shape, dtype=np.float32)
-    one = np.ones(shape, dtype=np.float32)
+    zero = np.zeros(
+        shape,
+        dtype=np.float32,
+    )
+
+    one = np.ones(
+        shape,
+        dtype=np.float32,
+    )
 
     fields = {
         "label": "nu_zero_lcdm",
         "one_plus_delta": one,
         "delta": zero,
+
         "summary": {
             "label": "nu_zero_lcdm",
             "mean_density": 1.0,
@@ -865,118 +1017,1507 @@ def build_zero_neutrino_fields_like(reference_field):
             "density_max": 1.0,
             "empty_cell_fraction": 0.0,
             "lcdm_zero_neutrino_convention": True,
+            "available_smoothing_scales": (),
+        },
+
+        "smoothed": {},
+
+        "is_zero_neutrino": True,
+
+        "primitive_sums": {
+            "density": float(
+                zero.size
+            ),
+            "P_x": 0.0,
+            "P_y": 0.0,
+            "P_z": 0.0,
         },
     }
 
     for comp in _COMPONENTS:
-        fields[f"V_{comp}"] = zero
-        fields[f"J_{comp}"] = zero
+
+        fields[
+            f"V_{comp}"
+        ] = zero
+
+        fields[
+            f"J_{comp}"
+        ] = zero
 
     return fields
 
-def build_Y_components(h, c):
-    """Return Y=(1+delta_h)(V_h-V_c)=J_h-(1+delta_h)V_c."""
 
-    one_h = h["one_plus_delta"]
+# ===========================================================================
+# Velocity source helpers
+# ===========================================================================
+
+def sorted_R_keys(keys):
+    """Sort keys such as R_5, R_10, R_16 numerically."""
+
+    return sorted(
+        keys,
+        key=lambda key: float(
+            str(key).replace(
+                "R_",
+                "",
+            )
+        ),
+    )
+
+
+def get_velocity_source(
+    species,
+    R_key=None,
+):
+    """
+    Return raw or smoothed velocity bundle.
+
+    Synthetic LCDM neutrinos remain zero for every R.
+    """
+
+    if R_key is None:
+        return species
+
+    if species.get(
+        "is_zero_neutrino",
+        False,
+    ):
+        return species
+
+    if R_key not in species[
+        "smoothed"
+    ]:
+        raise KeyError(
+            f"Smoothing scale {R_key!r} "
+            f"is unavailable for {species['label']}."
+        )
+
+    return species[
+        "smoothed"
+    ][
+        R_key
+    ]
+
+
+# ===========================================================================
+# Physical vector fields
+# ===========================================================================
+
+def build_Y_variant(
+    h,
+    c,
+    c_R=None,
+):
+    """
+    Return
+
+        Y = J_h - (1+delta_h)V_c
+
+    using raw or smoothed CDM velocity.
+    """
+
+    one_h = h[
+        "one_plus_delta"
+    ]
+
+    c_source = get_velocity_source(
+        c,
+        c_R,
+    )
+
     return tuple(
+
         (
             h[f"J_{comp}"]
-            - one_h * c[f"V_{comp}"]
-        ).astype(np.float32)
+            - one_h
+            * c_source[
+                f"V_{comp}"
+            ]
+        ).astype(
+            np.float32
+        )
+
         for comp in _COMPONENTS
     )
 
 
-def build_X_components(h, c, nu):
+def build_X_variant(
+    h,
+    c,
+    nu,
+    c_R=None,
+    nu_R=None,
+):
     """
-    Return X=(1+delta_h)(V_nu-V_c).
+    Return
 
-    For LCDM, the supplied synthetic neutrino field has V_nu=0, giving
+        X = (1+delta_h)(V_nu - V_c)
 
-        X_LCDM = -(1+delta_h)V_c.
+    allowing independent CDM and neutrino smoothing radii.
     """
 
-    if nu is None:
-        raise ValueError(
-            "A neutrino field or the synthetic LCDM zero-neutrino "
-            "field is required to construct X."
-        )
+    one_h = h[
+        "one_plus_delta"
+    ]
 
-    one_h = h["one_plus_delta"]
+    c_source = get_velocity_source(
+        c,
+        c_R,
+    )
+
+    nu_source = get_velocity_source(
+        nu,
+        nu_R,
+    )
+
     return tuple(
+
         (
             one_h
-            * (nu[f"V_{comp}"] - c[f"V_{comp}"])
-        ).astype(np.float32)
+            * (
+                nu_source[
+                    f"V_{comp}"
+                ]
+                - c_source[
+                    f"V_{comp}"
+                ]
+            )
+        ).astype(
+            np.float32
+        )
+
         for comp in _COMPONENTS
     )
 
-def build_X_unweighted_components(c, nu):
+
+def build_halo_weighted_velocity(
+    h,
+    species,
+    R_key=None,
+):
     """
-    Return the unweighted contribution
+    Return
 
-        X_unweighted = V_nu - V_c.
+        H_a = (1+delta_h)V_a
 
-    For the LCDM zero-neutrino convention, V_nu=0 and therefore
-
-        X_unweighted = -V_c.
+    for convergence diagnostics.
     """
 
-    if nu is None:
-        raise ValueError(
-            "A neutrino field or the synthetic LCDM zero-neutrino "
-            "field is required."
+    one_h = h[
+        "one_plus_delta"
+    ]
+
+    source = get_velocity_source(
+        species,
+        R_key,
+    )
+
+    return tuple(
+
+        (
+            one_h
+            * source[
+                f"V_{comp}"
+            ]
+        ).astype(
+            np.float32
         )
+
+        for comp in _COMPONENTS
+    )
+
+
+def get_current_vector(
+    species,
+):
+    """Return J=(Jx,Jy,Jz)."""
+
+    return tuple(
+        species[
+            f"J_{comp}"
+        ]
+        for comp in _COMPONENTS
+    )
+
+
+def get_velocity_vector(
+    species,
+    R_key=None,
+):
+    """Return raw or smoothed V vector."""
+
+    source = get_velocity_source(
+        species,
+        R_key,
+    )
+
+    return tuple(
+        source[
+            f"V_{comp}"
+        ]
+        for comp in _COMPONENTS
+    )
+
+
+# ===========================================================================
+# Raw response decomposition
+# ===========================================================================
+
+def build_X_unweighted_components(
+    c,
+    nu,
+):
 
     return tuple(
         (
-            nu[f"V_{comp}"] - c[f"V_{comp}"]
-        ).astype(np.float32, copy=False)
+            nu[f"V_{comp}"]
+            - c[f"V_{comp}"]
+        ).astype(
+            np.float32,
+            copy=False,
+        )
         for comp in _COMPONENTS
     )
 
-def build_Y_unweighted_components(h, c):
-    """
-    Return the unweighted contribution
 
-        Y_unweighted = V_h - V_c,
+def build_Y_unweighted_components(
+    h,
+    c,
+):
 
-    using the same halo bulk velocity definition as build_halo_fields:
+    one_plus_delta_h = (
+        h[
+            "one_plus_delta"
+        ]
+    )
 
-        V_h = P_h / n_h
-            = J_h / (1 + delta_h).
-
-    In cells with no halos, np.divide leaves V_h equal to zero, exactly as
-    in the existing halo-velocity diagnostic implementation.
-    """
-
-    one_plus_delta_h = h["one_plus_delta"]
-    occupied = one_plus_delta_h > 0.0
+    occupied = (
+        one_plus_delta_h > 0.0
+    )
 
     components = []
 
     for comp in _COMPONENTS:
-        # This temporary grid becomes the output Y component, avoiding a
-        # separate persistent V_h grid.
+
         component = np.zeros_like(
-            h[f"J_{comp}"],
+            h[
+                f"J_{comp}"
+            ],
             dtype=np.float32,
         )
 
-        # First reconstruct V_h directly into component.
         np.divide(
-            h[f"J_{comp}"],
+            h[
+                f"J_{comp}"
+            ],
             one_plus_delta_h,
             out=component,
             where=occupied,
         )
 
-        # Convert V_h to V_h - V_c in place.
-        component -= c[f"V_{comp}"]
+        component -= c[
+            f"V_{comp}"
+        ]
 
-        components.append(component)
+        components.append(
+            component
+        )
 
-    return tuple(components)
+    return tuple(
+        components
+    )
+
+
+def compute_response_decomposition_spectra(
+    h,
+    c,
+    nu,
+    delta_c,
+    full_response,
+    boxsize,
+    fft_workers=1,
+):
+
+    # ------------------------------------------------------------------
+    # X unweighted
+    # ------------------------------------------------------------------
+
+    X_unweighted = (
+        build_X_unweighted_components(
+            c,
+            nu,
+        )
+    )
+
+    div_X_unweighted = (
+        fft_divergence(
+            X_unweighted,
+            boxsize,
+            workers=fft_workers,
+        )
+    )
+
+    del X_unweighted
+
+    spec_X_unweighted = (
+        scalar_cross_spectrum(
+            delta_c,
+            div_X_unweighted,
+            boxsize,
+            MAS="None",
+        )
+    )
+
+    del div_X_unweighted
+
+    # ------------------------------------------------------------------
+    # Y unweighted
+    # ------------------------------------------------------------------
+
+    Y_unweighted = (
+        build_Y_unweighted_components(
+            h,
+            c,
+        )
+    )
+
+    div_Y_unweighted = (
+        fft_divergence(
+            Y_unweighted,
+            boxsize,
+            workers=fft_workers,
+        )
+    )
+
+    del Y_unweighted
+
+    spec_Y_unweighted = (
+        scalar_cross_spectrum(
+            delta_c,
+            div_Y_unweighted,
+            boxsize,
+            MAS="None",
+        )
+    )
+
+    del div_Y_unweighted
+
+    assert_same_binning(
+        spec_X_unweighted,
+        spec_Y_unweighted,
+        labels=(
+            "delta-divX-unweighted",
+            "delta-divY-unweighted",
+        ),
+    )
+
+    assert_matching_k_and_modes(
+        reference_k=full_response[
+            "k_h_per_Mpc"
+        ],
+        reference_modes=full_response[
+            "Nmodes"
+        ],
+        test_k=spec_X_unweighted[0],
+        test_modes=spec_X_unweighted[4],
+        label="delta-divX-unweighted",
+    )
+
+    assert_matching_k_and_modes(
+        reference_k=full_response[
+            "k_h_per_Mpc"
+        ],
+        reference_modes=full_response[
+            "Nmodes"
+        ],
+        test_k=spec_Y_unweighted[0],
+        test_modes=spec_Y_unweighted[4],
+        label="delta-divY-unweighted",
+    )
+
+    P_X_full = np.asarray(
+        full_response[
+            "P_delta_c_divX"
+        ]
+    )
+
+    P_Y_full = np.asarray(
+        full_response[
+            "P_delta_c_divY"
+        ]
+    )
+
+    P_X_unweighted = np.asarray(
+        spec_X_unweighted[3]
+    )
+
+    P_Y_unweighted = np.asarray(
+        spec_Y_unweighted[3]
+    )
+
+    return {
+        "k_h_per_Mpc": np.asarray(
+            full_response[
+                "k_h_per_Mpc"
+            ]
+        ),
+
+        "Nmodes": np.asarray(
+            full_response[
+                "Nmodes"
+            ]
+        ),
+
+        "P_delta_c_divX_full": (
+            P_X_full
+        ),
+
+        "P_delta_c_divX_unweighted": (
+            P_X_unweighted
+        ),
+
+        "P_delta_c_divX_weighted": (
+            P_X_full
+            - P_X_unweighted
+        ),
+
+        "P_delta_c_divY_full": (
+            P_Y_full
+        ),
+
+        "P_delta_c_divY_unweighted": (
+            P_Y_unweighted
+        ),
+
+        "P_delta_c_divY_weighted": (
+            P_Y_full
+            - P_Y_unweighted
+        ),
+
+        "definitions": {
+            "X_unweighted": "V_nu-V_c",
+            "X_weighted": (
+                "delta_h*(V_nu-V_c)"
+            ),
+            "Y_unweighted": "V_h-V_c",
+            "Y_weighted": (
+                "delta_h*(V_h-V_c)"
+            ),
+        },
+    }
+
+
+# ===========================================================================
+# Smoothed response variants
+# ===========================================================================
+
+def compute_response_variants(
+    h,
+    c,
+    nu,
+    delta_c,
+    div_Y_raw,
+    raw_response,
+    boxsize,
+    is_lcdm,
+    fft_workers=1,
+    compute_all_smoothing_pairs=False,
+):
+    """
+    Compute response-estimator variants.
+
+    Variants:
+
+      raw:
+          X(Vnu,Vc), Y(Vc)
+
+      cdm_smoothed_only:
+          X(Vnu,Vc^Rc), Y(Vc^Rc)
+
+      nu_smoothed_only:
+          X(Vnu^Rnu,Vc), Y(Vc)
+
+      both_same_R:
+          X(Vnu^R,Vc^R), Y(Vc^R)
+
+      all_pairs (optional):
+          X(Vnu^Rnu,Vc^Rc), Y(Vc^Rc)
+    """
+
+    out = {
+        "raw": raw_response,
+
+        "cdm_smoothed_only": {},
+
+        "nu_smoothed_only": {},
+
+        "both_same_R": {},
+
+        "all_pairs": {},
+
+        "definitions": {
+            "raw": (
+                "X=(1+delta_h)(V_nu-V_c), "
+                "Y=J_h-(1+delta_h)V_c"
+            ),
+
+            "cdm_smoothed_only": (
+                "X=(1+delta_h)(V_nu-V_c^Rc), "
+                "Y=J_h-(1+delta_h)V_c^Rc"
+            ),
+
+            "nu_smoothed_only": (
+                "X=(1+delta_h)(V_nu^Rnu-V_c), "
+                "Y=J_h-(1+delta_h)V_c"
+            ),
+
+            "both_same_R": (
+                "X=(1+delta_h)(V_nu^R-V_c^R), "
+                "Y=J_h-(1+delta_h)V_c^R"
+            ),
+
+            "all_pairs": (
+                "X=(1+delta_h)(V_nu^Rnu-V_c^Rc), "
+                "Y=J_h-(1+delta_h)V_c^Rc"
+            ),
+        },
+    }
+
+    c_scales = sorted_R_keys(
+        c[
+            "smoothed"
+        ].keys()
+    )
+
+    if is_lcdm:
+
+        # V_nu=0 for every smoothing scale.
+        nu_scales = []
+
+    else:
+
+        nu_scales = sorted_R_keys(
+            nu[
+                "smoothed"
+            ].keys()
+        )
+
+    # ===================================================================
+    # Neutrino-only smoothing
+    #
+    # Y is raw, so reuse div_Y_raw.
+    # ===================================================================
+
+    for Rnu in nu_scales:
+
+        X_nuR = build_X_variant(
+            h,
+            c,
+            nu,
+            nu_R=Rnu,
+        )
+
+        div_X_nuR = fft_divergence(
+            X_nuR,
+            boxsize,
+            workers=fft_workers,
+        )
+
+        del X_nuR
+
+        out[
+            "nu_smoothed_only"
+        ][
+            Rnu
+        ] = compute_one_sided_response_spectra(
+            delta_c=delta_c,
+            div_Y=div_Y_raw,
+            div_X=div_X_nuR,
+            boxsize=boxsize,
+            physical_neutrino_driver_available=True,
+            lcdm_zero_neutrino_convention=False,
+        )
+
+        del div_X_nuR
+
+    # ===================================================================
+    # CDM smoothing
+    #
+    # Process one Rc at a time so only one divY_R is kept in memory.
+    # ===================================================================
+
+    for Rc in c_scales:
+
+        Y_cR = build_Y_variant(
+            h,
+            c,
+            c_R=Rc,
+        )
+
+        div_Y_cR = fft_divergence(
+            Y_cR,
+            boxsize,
+            workers=fft_workers,
+        )
+
+        del Y_cR
+
+        # ---------------------------------------------------------------
+        # CDM-smoothed-only
+        # ---------------------------------------------------------------
+
+        X_cR = build_X_variant(
+            h,
+            c,
+            nu,
+            c_R=Rc,
+        )
+
+        div_X_cR = fft_divergence(
+            X_cR,
+            boxsize,
+            workers=fft_workers,
+        )
+
+        del X_cR
+
+        out[
+            "cdm_smoothed_only"
+        ][
+            Rc
+        ] = compute_one_sided_response_spectra(
+            delta_c=delta_c,
+            div_Y=div_Y_cR,
+            div_X=div_X_cR,
+            boxsize=boxsize,
+            physical_neutrino_driver_available=(
+                not is_lcdm
+            ),
+            lcdm_zero_neutrino_convention=(
+                is_lcdm
+            ),
+        )
+
+        del div_X_cR
+
+        # ---------------------------------------------------------------
+        # LCDM: zero neutrino means same-R is identical to CDM-only.
+        # ---------------------------------------------------------------
+
+        if is_lcdm:
+
+            out[
+                "both_same_R"
+            ][
+                Rc
+            ] = out[
+                "cdm_smoothed_only"
+            ][
+                Rc
+            ]
+
+        # ---------------------------------------------------------------
+        # Massive-neutrino same-R
+        # ---------------------------------------------------------------
+
+        elif Rc in nu[
+            "smoothed"
+        ]:
+
+            X_both = build_X_variant(
+                h,
+                c,
+                nu,
+                c_R=Rc,
+                nu_R=Rc,
+            )
+
+            div_X_both = fft_divergence(
+                X_both,
+                boxsize,
+                workers=fft_workers,
+            )
+
+            del X_both
+
+            out[
+                "both_same_R"
+            ][
+                Rc
+            ] = (
+                compute_one_sided_response_spectra(
+                    delta_c=delta_c,
+                    div_Y=div_Y_cR,
+                    div_X=div_X_both,
+                    boxsize=boxsize,
+                    physical_neutrino_driver_available=True,
+                    lcdm_zero_neutrino_convention=False,
+                )
+            )
+
+            del div_X_both
+
+        # ---------------------------------------------------------------
+        # Arbitrary Rc,Rnu pairs
+        # ---------------------------------------------------------------
+
+        if (
+            compute_all_smoothing_pairs
+            and not is_lcdm
+        ):
+
+            out[
+                "all_pairs"
+            ][
+                Rc
+            ] = {}
+
+            for Rnu in nu_scales:
+
+                # Same-R case was already computed above.
+                if Rnu == Rc:
+
+                    out[
+                        "all_pairs"
+                    ][
+                        Rc
+                    ][
+                        Rnu
+                    ] = out[
+                        "both_same_R"
+                    ][
+                        Rc
+                    ]
+
+                    continue
+
+                X_pair = build_X_variant(
+                    h,
+                    c,
+                    nu,
+                    c_R=Rc,
+                    nu_R=Rnu,
+                )
+
+                div_X_pair = fft_divergence(
+                    X_pair,
+                    boxsize,
+                    workers=fft_workers,
+                )
+
+                del X_pair
+
+                out[
+                    "all_pairs"
+                ][
+                    Rc
+                ][
+                    Rnu
+                ] = (
+                    compute_one_sided_response_spectra(
+                        delta_c=delta_c,
+                        div_Y=div_Y_cR,
+                        div_X=div_X_pair,
+                        boxsize=boxsize,
+                        physical_neutrino_driver_available=True,
+                        lcdm_zero_neutrino_convention=False,
+                    )
+                )
+
+                del div_X_pair
+
+        del div_Y_cR
+        gc.collect()
+
+    return out
+
+
+# ===========================================================================
+# Convergence diagnostics
+# ===========================================================================
+
+def compute_convergence_tests(
+    h,
+    c,
+    nu,
+    boxsize,
+):
+    """
+    Quantities intended explicitly for Ngrid convergence tests.
+
+    Direct CIC currents:
+
+        J_h  = (1+delta_h)V_h
+        J_c  = (1+delta_c)V_c
+        J_nu = (1+delta_nu)V_nu.
+
+    Mixed nonlinear fields:
+
+        H_c  = (1+delta_h)V_c
+        H_nu = (1+delta_h)V_nu.
+
+    The direct currents inherit primitive CIC conservation.
+    H_c and H_nu are products of separately reconstructed grid fields and
+    need not have the same Ngrid behavior.
+
+    For the primitive current spectra we save two versions:
+
+        MAS_None:
+            spectra measured directly from the gridded CIC fields,
+            without applying an additional mass-assignment correction.
+
+        MAS_CIC:
+            spectra obtained with MAS="CIC" passed to the Pylians
+            velocity-spectrum routine.
+
+    Saving both allows the CIC correction itself to be diagnosed later,
+    rather than building it implicitly into the convergence test.
+    """
+
+    # ===================================================================
+    # Primitive normalized currents
+    # ===================================================================
+
+    Jh = get_current_vector(
+        h
+    )
+
+    Jc = get_current_vector(
+        c
+    )
+
+    Jnu = get_current_vector(
+        nu
+    )
+
+    # ===================================================================
+    # Output structure
+    # ===================================================================
+
+    out = {
+
+        "primitive_zero_modes": {
+            "halo": h[
+                "primitive_sums"
+            ],
+            "cdm": c[
+                "primitive_sums"
+            ],
+            "nu": nu[
+                "primitive_sums"
+            ],
+        },
+
+        "smoothed_zero_modes": {
+            "cdm": {},
+            "nu": {},
+        },
+
+        "halo_occupancy": h[
+            "summary"
+        ],
+
+        # ---------------------------------------------------------------
+        # Save both the raw gridded current spectra and the spectra
+        # evaluated with the CIC MAS option.
+        # ---------------------------------------------------------------
+
+        "current_spectra": {
+            "MAS_None": {},
+            "MAS_CIC": {},
+        },
+
+        "halo_weighted_velocity_spectra": {
+            "raw": {},
+            "cdm_smoothed": {},
+            "nu_smoothed": {},
+        },
+
+        "definitions": {
+
+            "J_h": (
+                "(1+delta_h)V_h=P_h/<n_h>"
+            ),
+
+            "J_c": (
+                "(1+delta_c)V_c=P_c/<n_c>"
+            ),
+
+            "J_nu": (
+                "(1+delta_nu)V_nu=P_nu/<n_nu>"
+            ),
+
+            "H_c": (
+                "(1+delta_h)V_c"
+            ),
+
+            "H_nu": (
+                "(1+delta_h)V_nu"
+            ),
+
+            "current_spectra_MAS_None": (
+                "Primitive current spectra measured directly from the "
+                "gridded CIC current fields with no additional MAS "
+                "correction."
+            ),
+
+            "current_spectra_MAS_CIC": (
+                "The same primitive current spectra evaluated with "
+                'MAS="CIC" in the Pylians velocity-spectrum routine. '
+                "Comparing these with MAS_None isolates the effect of "
+                "the CIC mass-assignment treatment."
+            ),
+
+            "interpretation": (
+                "J_a is directly proportional to a deposited primitive "
+                "first moment and therefore has a well-defined CIC zero "
+                "mode. H_c and H_nu are nonlinear products of separately "
+                "constructed fields and can exhibit stronger Ngrid "
+                "dependence. No universal CIC correction is applied to "
+                "the mixed nonlinear H fields."
+            ),
+        },
+    }
+
+    # ===================================================================
+    # Zero-mode conservation of smoothed primitive fields
+    # ===================================================================
+
+    for species_name, species in (
+        ("cdm", c),
+        ("nu", nu),
+    ):
+
+        raw_sums = species[
+            "primitive_sums"
+        ]
+
+        density_sum_raw = float(
+            raw_sums[
+                "density"
+            ]
+        )
+
+        Px_sum_raw = float(
+            raw_sums[
+                "P_x"
+            ]
+        )
+
+        Py_sum_raw = float(
+            raw_sums[
+                "P_y"
+            ]
+        )
+
+        Pz_sum_raw = float(
+            raw_sums[
+                "P_z"
+            ]
+        )
+
+        for R_key in sorted_R_keys(
+            species[
+                "smoothed"
+            ].keys()
+        ):
+
+            smooth = species[
+                "smoothed"
+            ][
+                R_key
+            ]
+
+            density_sum_R = float(
+                smooth[
+                    "summary"
+                ][
+                    "density_sum"
+                ]
+            )
+
+            Px_sum_R = float(
+                smooth[
+                    "P_sum_x"
+                ]
+            )
+
+            Py_sum_R = float(
+                smooth[
+                    "P_sum_y"
+                ]
+            )
+
+            Pz_sum_R = float(
+                smooth[
+                    "P_sum_z"
+                ]
+            )
+
+            density_difference = (
+                density_sum_R
+                -
+                density_sum_raw
+            )
+
+            Px_difference = (
+                Px_sum_R
+                -
+                Px_sum_raw
+            )
+
+            Py_difference = (
+                Py_sum_R
+                -
+                Py_sum_raw
+            )
+
+            Pz_difference = (
+                Pz_sum_R
+                -
+                Pz_sum_raw
+            )
+
+            # -----------------------------------------------------------
+            # For density a relative difference is meaningful because
+            # the zero mode is large and strictly positive.
+            #
+            # We deliberately do NOT form relative differences for the
+            # momentum components, because their global sums can be close
+            # to zero. Dividing by such a number would produce a large
+            # and misleading relative error.
+            # -----------------------------------------------------------
+
+            if density_sum_raw != 0.0:
+
+                density_relative_difference = (
+                    density_difference
+                    /
+                    density_sum_raw
+                )
+
+            else:
+
+                density_relative_difference = np.nan
+
+            out[
+                "smoothed_zero_modes"
+            ][
+                species_name
+            ][
+                R_key
+            ] = {
+
+                # -------------------------------------------------------
+                # Smoothed zero modes
+                # -------------------------------------------------------
+
+                "density_sum": density_sum_R,
+
+                "P_x_sum": Px_sum_R,
+
+                "P_y_sum": Py_sum_R,
+
+                "P_z_sum": Pz_sum_R,
+
+                # -------------------------------------------------------
+                # Raw zero modes for direct comparison
+                # -------------------------------------------------------
+
+                "density_sum_raw": density_sum_raw,
+
+                "P_x_sum_raw": Px_sum_raw,
+
+                "P_y_sum_raw": Py_sum_raw,
+
+                "P_z_sum_raw": Pz_sum_raw,
+
+                # -------------------------------------------------------
+                # Conservation diagnostics
+                # -------------------------------------------------------
+
+                "density_difference": (
+                    density_difference
+                ),
+
+                "density_relative_difference": (
+                    density_relative_difference
+                ),
+
+                "P_x_difference": (
+                    Px_difference
+                ),
+
+                "P_y_difference": (
+                    Py_difference
+                ),
+
+                "P_z_difference": (
+                    Pz_difference
+                ),
+            }
+
+    # ===================================================================
+    # All primitive current auto/cross spectra
+    #
+    # Save BOTH:
+    #
+    #   1. MAS=None
+    #      literal spectra of the gridded CIC current fields;
+    #
+    #   2. MAS=CIC
+    #      spectra with the CIC option supplied to Pylians.
+    #
+    # This comparison lets us determine later how important the CIC
+    # treatment is as a function of k and Ngrid.
+    # ===================================================================
+
+    current_vectors = {
+        "h": Jh,
+        "c": Jc,
+        "nu": Jnu,
+    }
+
+    current_names = (
+        "h",
+        "c",
+        "nu",
+    )
+
+    for i, a in enumerate(
+        current_names
+    ):
+
+        for b in current_names[
+            i:
+        ]:
+
+            spectrum_name = (
+                f"{a}_x_{b}"
+            )
+
+            # -----------------------------------------------------------
+            # Raw gridded spectrum: no additional MAS correction
+            # -----------------------------------------------------------
+
+            out[
+                "current_spectra"
+            ][
+                "MAS_None"
+            ][
+                spectrum_name
+            ] = vector_cross_spectrum(
+                current_vectors[a],
+                current_vectors[b],
+                boxsize,
+                MAS="None",
+            )
+
+            # -----------------------------------------------------------
+            # Same spectrum with CIC treatment in Pylians
+            # -----------------------------------------------------------
+
+            out[
+                "current_spectra"
+            ][
+                "MAS_CIC"
+            ][
+                spectrum_name
+            ] = vector_cross_spectrum(
+                current_vectors[a],
+                current_vectors[b],
+                boxsize,
+                MAS="CIC",
+            )
+
+    # ===================================================================
+    # Raw Hc and Hnu
+    # ===================================================================
+    #
+    # These are nonlinear mixed fields:
+    #
+    #     Hc  = (1+delta_h) V_c
+    #     Hnu = (1+delta_h) V_nu
+    #
+    # We therefore keep MAS="None".  A single CIC transfer function cannot
+    # in general be factored out of these products.
+    # ===================================================================
+
+    Hc = build_halo_weighted_velocity(
+        h,
+        c,
+    )
+
+    Hnu = build_halo_weighted_velocity(
+        h,
+        nu,
+    )
+
+    out[
+        "halo_weighted_velocity_spectra"
+    ][
+        "raw"
+    ] = {
+
+        "Jh_x_Hc": vector_cross_spectrum(
+            Jh,
+            Hc,
+            boxsize,
+            MAS="None",
+        ),
+
+        "Jh_x_Hnu": vector_cross_spectrum(
+            Jh,
+            Hnu,
+            boxsize,
+            MAS="None",
+        ),
+
+        "Hc_x_Hc": vector_cross_spectrum(
+            Hc,
+            Hc,
+            boxsize,
+            MAS="None",
+        ),
+
+        "Hnu_x_Hnu": vector_cross_spectrum(
+            Hnu,
+            Hnu,
+            boxsize,
+            MAS="None",
+        ),
+
+        "Hc_x_Hnu": vector_cross_spectrum(
+            Hc,
+            Hnu,
+            boxsize,
+            MAS="None",
+        ),
+    }
+
+    del Hc
+    del Hnu
+
+    gc.collect()
+
+    # ===================================================================
+    # Smoothed CDM Hc^R
+    # ===================================================================
+
+    for Rc in sorted_R_keys(
+        c[
+            "smoothed"
+        ].keys()
+    ):
+
+        Hc_R = build_halo_weighted_velocity(
+            h,
+            c,
+            R_key=Rc,
+        )
+
+        out[
+            "halo_weighted_velocity_spectra"
+        ][
+            "cdm_smoothed"
+        ][
+            Rc
+        ] = {
+
+            "Jh_x_HcR": vector_cross_spectrum(
+                Jh,
+                Hc_R,
+                boxsize,
+                MAS="None",
+            ),
+
+            "HcR_x_HcR": vector_cross_spectrum(
+                Hc_R,
+                Hc_R,
+                boxsize,
+                MAS="None",
+            ),
+        }
+
+        del Hc_R
+
+        gc.collect()
+
+    # ===================================================================
+    # Smoothed neutrino Hnu^R
+    # ===================================================================
+
+    for Rnu in sorted_R_keys(
+        nu[
+            "smoothed"
+        ].keys()
+    ):
+
+        Hnu_R = build_halo_weighted_velocity(
+            h,
+            nu,
+            R_key=Rnu,
+        )
+
+        out[
+            "halo_weighted_velocity_spectra"
+        ][
+            "nu_smoothed"
+        ][
+            Rnu
+        ] = {
+
+            "Jh_x_HnuR": vector_cross_spectrum(
+                Jh,
+                Hnu_R,
+                boxsize,
+                MAS="None",
+            ),
+
+            "HnuR_x_HnuR": vector_cross_spectrum(
+                Hnu_R,
+                Hnu_R,
+                boxsize,
+                MAS="None",
+            ),
+        }
+
+        del Hnu_R
+
+        gc.collect()
+
+    gc.collect()
+
+    return out
+
+# ===========================================================================
+# Optional existing species diagnostics
+# ===========================================================================
+
+def compute_species_velocity_diagnostics(
+    h,
+    c,
+    nu,
+    boxsize,
+):
+    """
+    Raw density, current and velocity auto/cross spectra.
+    """
+
+    species = {
+        "h": h,
+        "c": c,
+        "nu": nu,
+    }
+
+    out = {
+        "available_species": tuple(
+            species.keys()
+        ),
+
+        "density_spectra": {},
+
+        "current_spectra": {},
+
+        "velocity_spectra": {},
+
+        "notes": {
+            "current": (
+                "J_a=(1+delta_a)V_a."
+            ),
+
+            "halo_velocity": (
+                "V_h=P_h/n_h is set to zero where n_h=0."
+            ),
+        },
+    }
+
+    names = tuple(
+        species.keys()
+    )
+
+    for i, a in enumerate(
+        names
+    ):
+
+        for b in names[
+            i:
+        ]:
+
+            A = species[a]
+            B = species[b]
+
+            pair_key = (
+                f"{a}_x_{b}"
+            )
+
+            # -----------------------------------------------------------
+            # Density
+            # -----------------------------------------------------------
+
+            density_result = (
+                scalar_cross_spectrum(
+                    A["delta"],
+                    B["delta"],
+                    boxsize,
+                    MAS="CIC",
+                )
+            )
+
+            out[
+                "density_spectra"
+            ][
+                pair_key
+            ] = spectrum_to_named_dict(
+                density_result,
+                f"delta_{a}",
+                f"delta_{b}",
+            )
+
+            # -----------------------------------------------------------
+            # Current
+            # -----------------------------------------------------------
+
+            out[
+                "current_spectra"
+            ][
+                pair_key
+            ] = vector_cross_spectrum(
+                get_current_vector(
+                    A
+                ),
+                get_current_vector(
+                    B
+                ),
+                boxsize,
+                MAS="CIC",
+            )
+
+            # -----------------------------------------------------------
+            # Velocity
+            # -----------------------------------------------------------
+
+            out[
+                "velocity_spectra"
+            ][
+                pair_key
+            ] = vector_cross_spectrum(
+                get_velocity_vector(
+                    A
+                ),
+                get_velocity_vector(
+                    B
+                ),
+                boxsize,
+                MAS="None",
+            )
+
+    return out
+
+
+# ===========================================================================
+# Response spectra
+# ===========================================================================
 
 def compute_one_sided_response_spectra(
     delta_c,
@@ -986,94 +2527,118 @@ def compute_one_sided_response_spectra(
     physical_neutrino_driver_available,
     lcdm_zero_neutrino_convention,
 ):
-    """
-    Save the six spectra needed for beta_h and its Gaussian covariance.
 
-    beta_h itself is intentionally not formed here.
-    """
+    delta_x_div_y = (
+        scalar_cross_spectrum(
+            delta_c,
+            div_Y,
+            boxsize,
+            MAS="None",
+        )
+    )
 
-    delta_x_div_y = scalar_cross_spectrum(
-        delta_c,
-        div_Y,
-        boxsize,
-        MAS="None",
+    delta_x_div_x = (
+        scalar_cross_spectrum(
+            delta_c,
+            div_X,
+            boxsize,
+            MAS="None",
+        )
     )
-    delta_x_div_x = scalar_cross_spectrum(
-        delta_c,
-        div_X,
-        boxsize,
-        MAS="None",
-    )
-    div_y_x_div_x = scalar_cross_spectrum(
-        div_Y,
-        div_X,
-        boxsize,
-        MAS="None",
+
+    div_y_x_div_x = (
+        scalar_cross_spectrum(
+            div_Y,
+            div_X,
+            boxsize,
+            MAS="None",
+        )
     )
 
     assert_same_binning(
         delta_x_div_y,
         delta_x_div_x,
         div_y_x_div_x,
-        labels=("delta-divY", "delta-divX", "divY-divX"),
+        labels=(
+            "delta-divY",
+            "delta-divX",
+            "divY-divX",
+        ),
     )
 
     return {
+
         "beta_estimator_available": True,
-    
+
         "physical_neutrino_driver_available": bool(
             physical_neutrino_driver_available
         ),
-    
+
         "lcdm_zero_neutrino_convention": bool(
             lcdm_zero_neutrino_convention
         ),
-    
-        "k_h_per_Mpc": delta_x_div_y[0],    
-        "P_delta_c_delta_c": delta_x_div_y[1],
-        "P_delta_c_divY": delta_x_div_y[3],
-        "P_delta_c_divX": delta_x_div_x[3],
-    
-        "P_divY_divY": delta_x_div_y[2],
-        "P_divX_divX": delta_x_div_x[2],
-        "P_divY_divX": div_y_x_div_x[3],
-    
-        "Nmodes": delta_x_div_y[4],
-    
+
+        "k_h_per_Mpc": (
+            delta_x_div_y[0]
+        ),
+
+        "P_delta_c_delta_c": (
+            delta_x_div_y[1]
+        ),
+
+        "P_delta_c_divY": (
+            delta_x_div_y[3]
+        ),
+
+        "P_delta_c_divX": (
+            delta_x_div_x[3]
+        ),
+
+        "P_divY_divY": (
+            delta_x_div_y[2]
+        ),
+
+        "P_divX_divX": (
+            delta_x_div_x[2]
+        ),
+
+        "P_divY_divX": (
+            div_y_x_div_x[3]
+        ),
+
+        "Nmodes": (
+            delta_x_div_y[4]
+        ),
+
         "postprocessing_estimator": (
             "beta_h(k)="
-            "P_delta_c_divY(k)/P_delta_c_divX(k)"
+            "P_delta_c_divY(k)/"
+            "P_delta_c_divX(k)"
         ),
-    
-        "driver_definition": (
-            "Massive-neutrino runs: "
-            "X=(1+delta_h)(V_nu-V_c). "
-            "LCDM convention: V_nu=J_nu=0, hence "
-            "X=-(1+delta_h)V_c."
-        ),
-    
+
         "normalization_note": (
             "div(Y) and div(X) are saved without -1/(aH); "
             "the common factor cancels in beta_h."
         ),
-    
+
         "mas_note": (
-            "No additional CIC deconvolution is applied to div(Y) "
-            "or div(X), because Y and X are nonlinear products of "
-            "separately gridded fields."
+            "No additional CIC deconvolution is applied to X/Y "
+            "because they are nonlinear products of separately "
+            "gridded fields."
         ),
     }
 
 
+# ===========================================================================
+# Density diagnostics
+# ===========================================================================
 
-
-def compute_density_diagnostics(h, c, nu, boxsize):
-    """
-    Save compact density spectra for bias and consistency tests.
-
-    Primitive density fields are direct CIC assignments, so the usual CIC
-    deconvolution is requested from Pylians.
-    """
+def compute_density_diagnostics(
+    h,
+    c,
+    nu,
+    boxsize,
+):
 
     h_x_c = scalar_cross_spectrum(
         h["delta"],
@@ -1082,114 +2647,210 @@ def compute_density_diagnostics(h, c, nu, boxsize):
         MAS="CIC",
     )
 
-    out = {
+    h_x_nu = scalar_cross_spectrum(
+        h["delta"],
+        nu["delta"],
+        boxsize,
+        MAS="CIC",
+    )
+
+    c_x_nu = scalar_cross_spectrum(
+        c["delta"],
+        nu["delta"],
+        boxsize,
+        MAS="CIC",
+    )
+
+    assert_same_binning(
+        h_x_c,
+        h_x_nu,
+        c_x_nu,
+        labels=(
+            "h-c",
+            "h-nu",
+            "c-nu",
+        ),
+    )
+
+    return {
         "k_h_per_Mpc": h_x_c[0],
+
         "P_hh": h_x_c[1],
         "P_cc": h_x_c[2],
         "P_hc": h_x_c[3],
+
+        "P_nunu": h_x_nu[2],
+        "P_hnu": h_x_nu[3],
+        "P_cnu": c_x_nu[3],
+
         "Nmodes": h_x_c[4],
+
+        "mas_note": (
+            "Density fields are direct CIC assignments; "
+            "standard CIC correction is requested from Pylians."
+        ),
     }
 
-    if nu is not None:
-        h_x_nu = scalar_cross_spectrum(
-            h["delta"],
-            nu["delta"],
-            boxsize,
-            MAS="CIC",
-        )
-        c_x_nu = scalar_cross_spectrum(
-            c["delta"],
-            nu["delta"],
-            boxsize,
-            MAS="CIC",
-        )
 
-        assert_same_binning(
-            h_x_c,
-            h_x_nu,
-            c_x_nu,
-            labels=("h-c", "h-nu", "c-nu"),
-        )
+# ===========================================================================
+# FFT divergence
+# ===========================================================================
 
-        out.update(
-            {
-                "P_nunu": h_x_nu[2],
-                "P_hnu": h_x_nu[3],
-                "P_cnu": c_x_nu[3],
-            }
-        )
-
-    out["mas_note"] = (
-        "These spectra are formed from directly CIC-deposited density "
-        "fields, so the standard CIC correction is requested from Pylians."
-    )
-    return out
-
-
-def fft_divergence(vec, boxsize):
+def fft_divergence(
+    vec,
+    boxsize,
+    workers=1,
+):
     """
-    Compute div(F)=i k.F using spectral derivatives and return a real grid.
+    Compute div(F)=i k.F with scipy.fft.
 
-    For an even grid, each Nyquist derivative component is set to zero. This
-    preserves the Hermitian symmetry required for a real inverse transform.
+    scipy.fft preserves float32/complex64, unlike numpy.fft which normally
+    promotes to double precision and substantially increases memory use.
+
+    Nyquist derivative modes are set to zero for even grids.
     """
 
     fx, fy, fz = (
-        np.asarray(component, dtype=np.float32)
+        np.asarray(
+            component,
+            dtype=np.float32,
+        )
         for component in vec
     )
 
-    if fx.shape != fy.shape or fx.shape != fz.shape:
-        raise ValueError("Vector components must have identical shapes.")
+    if (
+        fx.shape != fy.shape
+        or fx.shape != fz.shape
+    ):
+        raise ValueError(
+            "Vector components must have identical shapes."
+        )
+
     if fx.ndim != 3:
-        raise ValueError(f"Expected 3D fields; got shape {fx.shape}.")
+        raise ValueError(
+            f"Expected 3D fields; got shape {fx.shape}."
+        )
 
     nx, ny, nz = fx.shape
+
     dx = float(boxsize) / nx
     dy = float(boxsize) / ny
     dz = float(boxsize) / nz
 
-    kx_1d = (
-        2.0 * np.pi * np.fft.fftfreq(nx, d=dx)
-    ).astype(np.float32)
-    ky_1d = (
-        2.0 * np.pi * np.fft.fftfreq(ny, d=dy)
-    ).astype(np.float32)
-    kz_1d = (
-        2.0 * np.pi * np.fft.rfftfreq(nz, d=dz)
-    ).astype(np.float32)
+    kx = (
+        2.0
+        * np.pi
+        * sfft.fftfreq(
+            nx,
+            d=dx,
+        )
+    ).astype(
+        np.float32
+    )
+
+    ky = (
+        2.0
+        * np.pi
+        * sfft.fftfreq(
+            ny,
+            d=dy,
+        )
+    ).astype(
+        np.float32
+    )
+
+    kz = (
+        2.0
+        * np.pi
+        * sfft.rfftfreq(
+            nz,
+            d=dz,
+        )
+    ).astype(
+        np.float32
+    )
 
     if nx % 2 == 0:
-        kx_1d[nx // 2] = 0.0
+        kx[
+            nx // 2
+        ] = 0.0
+
     if ny % 2 == 0:
-        ky_1d[ny // 2] = 0.0
+        ky[
+            ny // 2
+        ] = 0.0
+
     if nz % 2 == 0:
-        kz_1d[-1] = 0.0
+        kz[-1] = 0.0
 
-    kx = kx_1d[:, None, None]
-    ky = ky_1d[None, :, None]
-    kz = kz_1d[None, None, :]
+    # ------------------------------------------------------------------
+    # x
+    # ------------------------------------------------------------------
 
-    fx_k = np.fft.rfftn(fx)
-    div_k = 1j * kx * fx_k
+    fx_k = sfft.rfftn(
+        fx,
+        workers=workers,
+    )
+
+    div_k = (
+        np.complex64(1j)
+        * kx[:, None, None]
+        * fx_k
+    )
+
     del fx_k
 
-    fy_k = np.fft.rfftn(fy)
-    div_k += 1j * ky * fy_k
+    # ------------------------------------------------------------------
+    # y
+    # ------------------------------------------------------------------
+
+    fy_k = sfft.rfftn(
+        fy,
+        workers=workers,
+    )
+
+    div_k += (
+        np.complex64(1j)
+        * ky[None, :, None]
+        * fy_k
+    )
+
     del fy_k
 
-    fz_k = np.fft.rfftn(fz)
-    div_k += 1j * kz * fz_k
+    # ------------------------------------------------------------------
+    # z
+    # ------------------------------------------------------------------
+
+    fz_k = sfft.rfftn(
+        fz,
+        workers=workers,
+    )
+
+    div_k += (
+        np.complex64(1j)
+        * kz[None, None, :]
+        * fz_k
+    )
+
     del fz_k
 
-    div = np.fft.irfftn(
+    div = sfft.irfftn(
         div_k,
         s=fx.shape,
-    ).real.astype(np.float32)
+        workers=workers,
+    ).astype(
+        np.float32,
+        copy=False,
+    )
+
     del div_k
 
     return div
 
+
+# ===========================================================================
+# Scalar spectra
+# ===========================================================================
 
 def scalar_cross_spectrum(
     field1,
@@ -1199,58 +2860,200 @@ def scalar_cross_spectrum(
     axis=0,
     threads=1,
 ):
-    """Return [k, P11, P22, P12, Nmodes] for two scalar grids."""
 
-    field1 = np.asarray(field1, dtype=np.float32)
-    field2 = np.asarray(field2, dtype=np.float32)
+    field1 = np.asarray(
+        field1,
+        dtype=np.float32,
+    )
 
-    if field1.shape != field2.shape:
+    field2 = np.asarray(
+        field2,
+        dtype=np.float32,
+    )
+
+    if (
+        field1.shape
+        != field2.shape
+    ):
         raise ValueError(
             "Scalar fields have inconsistent shapes: "
             f"{field1.shape} and {field2.shape}."
         )
 
     pk = PKL.XPk(
-        [field1.copy(), field2.copy()],
+        [
+            field1.copy(),
+            field2.copy(),
+        ],
         float(boxsize),
         axis,
-        [MAS, MAS],
+        [
+            MAS,
+            MAS,
+        ],
         threads,
     )
 
     return [
-        np.asarray(pk.k3D),
-        np.asarray(pk.Pk[:, 0, 0]),
-        np.asarray(pk.Pk[:, 0, 1]),
-        np.asarray(pk.XPk[:, 0, 0]),
-        np.asarray(pk.Nmodes3D),
+        np.asarray(
+            pk.k3D
+        ),
+
+        np.asarray(
+            pk.Pk[
+                :,
+                0,
+                0,
+            ]
+        ),
+
+        np.asarray(
+            pk.Pk[
+                :,
+                0,
+                1,
+            ]
+        ),
+
+        np.asarray(
+            pk.XPk[
+                :,
+                0,
+                0,
+            ]
+        ),
+
+        np.asarray(
+            pk.Nmodes3D
+        ),
     ]
 
 
-def assert_same_binning(*spectra, labels=None):
-    """Check that several scalar-spectrum outputs share bins and mode counts."""
+# ===========================================================================
+# Vector spectra
+# ===========================================================================
 
-    if len(spectra) < 2:
+def vector_cross_spectrum(
+    vec_a,
+    vec_b,
+    boxsize,
+    MAS="None",
+    threads=1,
+):
+    """
+    Full vector auto/cross spectrum using the existing user-provided
+    PKL.XPk_velvel routine.
+    """
+
+    result = PKL.XPk_velvel(
+        vec_a[0].copy(),
+        vec_a[1].copy(),
+        vec_a[2].copy(),
+
+        vec_b[0].copy(),
+        vec_b[1].copy(),
+        vec_b[2].copy(),
+
+        float(boxsize),
+
+        0,
+        MAS,
+        threads,
+    )
+
+    return {
+        "k_h_per_Mpc": np.asarray(
+            result[0]
+        ),
+
+        "P_AA": np.asarray(
+            result[1]
+        ),
+
+        "P_BB": np.asarray(
+            result[2]
+        ),
+
+        "P_AB": np.asarray(
+            result[3]
+        ),
+
+        "Nmodes": np.asarray(
+            result[4]
+        ),
+    }
+
+
+def spectrum_to_named_dict(
+    spectrum,
+    name_a,
+    name_b,
+):
+
+    return {
+        "k_h_per_Mpc": spectrum[0],
+        f"P_{name_a}_{name_a}": spectrum[1],
+        f"P_{name_b}_{name_b}": spectrum[2],
+        f"P_{name_a}_{name_b}": spectrum[3],
+        "Nmodes": spectrum[4],
+    }
+
+
+# ===========================================================================
+# Binning checks
+# ===========================================================================
+
+def assert_same_binning(
+    *spectra,
+    labels=None,
+):
+
+    if len(
+        spectra
+    ) < 2:
         return
 
     if labels is None:
+
         labels = tuple(
-            f"spectrum-{index}" for index in range(len(spectra))
+            f"spectrum-{index}"
+            for index in range(
+                len(
+                    spectra
+                )
+            )
         )
 
-    reference_k = np.asarray(spectra[0][0])
-    reference_modes = np.asarray(spectra[0][4])
+    reference_k = np.asarray(
+        spectra[0][0]
+    )
 
-    for spectrum, label in zip(spectra[1:], labels[1:]):
+    reference_modes = np.asarray(
+        spectra[0][4]
+    )
+
+    for spectrum, label in zip(
+        spectra[1:],
+        labels[1:],
+    ):
+
         if not np.allclose(
             reference_k,
             spectrum[0],
             rtol=0.0,
             atol=0.0,
         ):
-            raise RuntimeError(f"Inconsistent k bins in {label}.")
-        if not np.array_equal(reference_modes, spectrum[4]):
-            raise RuntimeError(f"Inconsistent Nmodes in {label}.")
+            raise RuntimeError(
+                f"Inconsistent k bins in {label}."
+            )
+
+        if not np.array_equal(
+            reference_modes,
+            spectrum[4],
+        ):
+            raise RuntimeError(
+                f"Inconsistent Nmodes in {label}."
+            )
 
 
 def assert_matching_k_and_modes(
@@ -1260,46 +3063,107 @@ def assert_matching_k_and_modes(
     test_modes,
     label,
 ):
-    """Check binning consistency between different Pylians estimators."""
 
     if not np.allclose(
-        np.asarray(reference_k),
-        np.asarray(test_k),
+        np.asarray(
+            reference_k
+        ),
+        np.asarray(
+            test_k
+        ),
         rtol=0.0,
         atol=0.0,
     ):
-        raise RuntimeError(f"Inconsistent k bins for {label}.")
+        raise RuntimeError(
+            f"Inconsistent k bins for {label}."
+        )
 
     if not np.array_equal(
-        np.asarray(reference_modes),
-        np.asarray(test_modes),
+        np.asarray(
+            reference_modes
+        ),
+        np.asarray(
+            test_modes
+        ),
     ):
-        raise RuntimeError(f"Inconsistent Nmodes for {label}.")
+        raise RuntimeError(
+            f"Inconsistent Nmodes for {label}."
+        )
 
 
-def validate_mean_density(density, field_label):
-    """Return a validated mean CIC count."""
+# ===========================================================================
+# Density helpers
+# ===========================================================================
 
-    mean_density = float(np.mean(density, dtype=np.float64))
-    if not np.isfinite(mean_density) or mean_density <= 0.0:
+def validate_mean_density(
+    density,
+    field_label,
+):
+
+    mean_density = float(
+        np.mean(
+            density,
+            dtype=np.float64,
+        )
+    )
+
+    if (
+        not np.isfinite(
+            mean_density
+        )
+        or mean_density <= 0.0
+    ):
         raise ValueError(
-            f"{field_label} has non-positive or non-finite mean density: "
+            f"{field_label} has invalid mean density: "
             f"{mean_density}"
         )
+
     return mean_density
 
 
-def summarize_density(density, mean_density, field_label):
-    """Return compact occupancy diagnostics for one gridded species."""
+def summarize_density(
+    density,
+    mean_density,
+    field_label,
+):
 
     return {
         "label": field_label,
-        "mean_density": float(mean_density),
-        "density_min": float(np.min(density)),
-        "density_max": float(np.max(density)),
-        "empty_cell_fraction": float(np.mean(density <= 0.0)),
+
+        "mean_density": float(
+            mean_density
+        ),
+
+        "density_sum": float(
+            np.sum(
+                density,
+                dtype=np.float64,
+            )
+        ),
+
+        "density_min": float(
+            np.min(
+                density
+            )
+        ),
+
+        "density_max": float(
+            np.max(
+                density
+            )
+        ),
+
+        "empty_cell_fraction": float(
+            np.mean(
+                density <= 0.0
+            )
+        ),
     }
 
+
+# ===========================================================================
+# Metadata
+# ===========================================================================
 
 def build_metadata(
     spec,
@@ -1312,99 +3176,228 @@ def build_metadata(
     is_lcdm,
     save_density_diagnostics,
     save_species_diagnostics,
+    compute_smoothed_responses,
+    compute_convergence_diagnostics,
+    compute_all_smoothing_pairs,
 ):
-    """Build output metadata."""
 
     return {
-        "analysis_type": "one_sided_cdm_halo_response_spectra",
+        "analysis_type": (
+            "extended_one_sided_cdm_halo_response_and_convergence"
+        ),
+
         "spec": spec,
+
         "sim_type": sim,
-        "ngrid": int(ngrid),
-        "boxsize_Mpc_over_h": float(boxsize),
+
+        "ngrid": int(
+            ngrid
+        ),
+
+        "grid_spacing_Mpc_over_h": (
+            float(
+                boxsize
+            )
+            / int(
+                ngrid
+            )
+        ),
+
+        "boxsize_Mpc_over_h": float(
+            boxsize
+        ),
+
         "mass_selection": string,
-        "mass_cut": float(mass_cut),
-        "mass_width": float(mass_width),
-        "lcdm_mode": bool(is_lcdm),
+
+        "mass_cut": float(
+            mass_cut
+        ),
+
+        "mass_width": float(
+            mass_width
+        ),
+
+        "lcdm_mode": bool(
+            is_lcdm
+        ),
+
         "density_diagnostics_saved": bool(
-            save_density_diagnostics or save_species_diagnostics
+            save_density_diagnostics
+            or save_species_diagnostics
         ),
-        "species_diagnostics_saved": bool(save_species_diagnostics),
+
+        "species_diagnostics_saved": bool(
+            save_species_diagnostics
+        ),
+
+        "smoothed_response_variants_saved": bool(
+            compute_smoothed_responses
+        ),
+
+        "convergence_diagnostics_saved": bool(
+            compute_convergence_diagnostics
+        ),
+
+        "all_Rc_Rnu_pairs_saved": bool(
+            compute_all_smoothing_pairs
+        ),
+
         "primitive_fields": {
-            "density": "n_a(x)=sum_p W_CIC(x-x_p)",
-            "P_i": "P_a,i(x)=sum_p W_CIC(x-x_p)v_p,i",
-            "V_i": "V_a,i=P_a,i/n_a, with V=0 in empty cells",
-            "J_h_i": "J_h,i=P_h,i/<n_h>=(1+delta_h)V_h,i",
+            "density": (
+                "n_a=sum_p W_CIC"
+            ),
+
+            "P_i": (
+                "P_a,i=sum_p W_CIC v_i"
+            ),
+
+            "V_i": (
+                "V_a,i=P_a,i/n_a"
+            ),
+
+            "J_i": (
+                "J_a,i=P_a,i/<n_a>="
+                "(1+delta_a)V_a,i"
+            ),
+
+            "V_i_R": (
+                "V_a,i^(R)=P_a,i^(R)/n_a^(R)"
+            ),
         },
-        "one_sided_fields": {
-            "Y": "Y=(1+delta_h)(V_h-V_c)=J_h-(1+delta_h)V_c",
-            "X": ("X=(1+delta_h)(V_nu-V_c); for LCDM, V_nu=0, "
-            "so X=-(1+delta_h)V_c" ),
+
+        "response_fields": {
+            "Y": (
+                "J_h-(1+delta_h)V_c"
+            ),
+
+            "X": (
+                "(1+delta_h)(V_nu-V_c)"
+            ),
         },
-        "saved_response_spectra": (
-            "For both massive-neutrino and LCDM runs: "
-            "P_delta_c_delta_c, P_delta_c_divY, P_delta_c_divX, "
-            "P_divY_divY, P_divX_divX, P_divY_divX, Nmodes. "
-            "For LCDM, V_nu=J_nu=0 is imposed."
-        ),
-        "optional_species_diagnostics": (
-            "All available density, current, and velocity auto- and "
-            "cross-spectra from Pylians."
-        ),
+
         "postprocessing_estimator": (
-            "beta_h(k)=P_delta_c_divY(k)/P_delta_c_divX(k)"
+            "beta_h(k)="
+            "P_delta_c_divY(k)/"
+            "P_delta_c_divX(k)"
         ),
     }
 
 
-def validate_inputs(string, ngrid_step):
-    """Validate user-facing options."""
+# ===========================================================================
+# Validation
+# ===========================================================================
 
-    if string not in {"+", "-", "bin", "all"}:
+def validate_inputs(
+    string,
+    ngrid_step,
+):
+
+    if string not in {
+        "+",
+        "-",
+        "bin",
+        "all",
+    }:
+
         raise ValueError(
-            "string must be one of '+', '-', 'bin', or 'all'; "
+            "string must be one of "
+            "'+', '-', 'bin', or 'all'; "
             f"got {string!r}"
         )
+
     if ngrid_step <= 0:
+
         raise ValueError(
-            f"ngrid_step must be positive; got {ngrid_step}"
+            "ngrid_step must be positive; "
+            f"got {ngrid_step}"
         )
 
 
-def simulation_def(spec, sim_type, string, mass_cut, mass_width):
-    """Return an output simulation tag."""
+# ===========================================================================
+# Naming
+# ===========================================================================
+
+def simulation_def(
+    spec,
+    sim_type,
+    string,
+    mass_cut,
+    mass_width,
+):
 
     if string == "+":
-        halo_tag = f"halo_mass_{mass_cut:.1e}"
-    elif string == "bin":
+
         halo_tag = (
-            f"halo_mass_{mass_cut:.1e}_mass_bin_{mass_width}"
+            f"halo_mass_{mass_cut:.1e}"
         )
+
+    elif string == "bin":
+
+        halo_tag = (
+            f"halo_mass_{mass_cut:.1e}"
+            f"_mass_bin_{mass_width}"
+        )
+
     elif string == "-":
-        halo_tag = f"halo_mass_le_{mass_cut:.1e}"
-    elif string == "all":
-        halo_tag = "halo_all"
-    else:
-        raise ValueError(
-            f"Unknown halo selection string={string!r}"
+
+        halo_tag = (
+            f"halo_mass_le_{mass_cut:.1e}"
         )
 
-    return f"{sim_type}_{spec}_one_sided_{halo_tag}_cdm_nu"
+    elif string == "all":
+
+        halo_tag = (
+            "halo_all"
+        )
+
+    else:
+
+        raise ValueError(
+            f"Unknown halo selection "
+            f"string={string!r}"
+        )
+
+    return (
+        f"{sim_type}_{spec}_"
+        f"extended_{halo_tag}_cdm_nu"
+    )
 
 
-def halo_directory_name(string, mass_cut, mass_width):
-    """Return the halo input-directory name."""
+def halo_directory_name(
+    string,
+    mass_cut,
+    mass_width,
+):
 
-    if string == "+":
-        return f"halo_mass_{mass_cut:.0e}".replace("+", "")
-    if string == "bin":
-        return f"halo_mass_{mass_cut:.0e}".replace("+", "")
+    if string in {
+        "+",
+        "bin",
+    }:
+
+        return (
+            f"halo_mass_{mass_cut:.0e}"
+            .replace(
+                "+",
+                "",
+            )
+        )
+
     if string == "-":
-        return f"halo_mass_le_{mass_cut:.0e}".replace("+", "")
+
+        return (
+            f"halo_mass_le_{mass_cut:.0e}"
+            .replace(
+                "+",
+                "",
+            )
+        )
+
     if string == "all":
         return "halo_all"
 
     raise ValueError(
-        f"Unknown halo selection string={string!r}"
+        f"Unknown halo selection "
+        f"string={string!r}"
     )
 
 
@@ -1416,26 +3409,51 @@ def halo_pickle_basename(
     mass_cut,
     mass_width,
 ):
-    """Return the halo pickle basename."""
 
     if string == "+":
-        sim_name = f"{sim}_{spec}_halo_mass_{mass_cut:.1e}"
-    elif string == "bin":
+
         sim_name = (
-            f"{sim}_{spec}_halo_mass_{mass_cut:.1e}_"
+            f"{sim}_{spec}_"
+            f"halo_mass_{mass_cut:.1e}"
+        )
+
+    elif string == "bin":
+
+        sim_name = (
+            f"{sim}_{spec}_"
+            f"halo_mass_{mass_cut:.1e}_"
             f"mass_bin_{mass_width}"
         )
+
     elif string == "-":
-        sim_name = f"{sim}_{spec}_halo_mass_le_{mass_cut:.1e}"
-    elif string == "all":
-        sim_name = f"{sim}_{spec}_halo_all"
-    else:
-        raise ValueError(
-            f"Unknown halo selection string={string!r}"
+
+        sim_name = (
+            f"{sim}_{spec}_"
+            f"halo_mass_le_{mass_cut:.1e}"
         )
 
-    return f"data_ngrid_{ngrid}_sim_{sim_name}.pickle"
+    elif string == "all":
 
+        sim_name = (
+            f"{sim}_{spec}_halo_all"
+        )
+
+    else:
+
+        raise ValueError(
+            f"Unknown halo selection "
+            f"string={string!r}"
+        )
+
+    return (
+        f"data_ngrid_{ngrid}_"
+        f"sim_{sim_name}.pickle"
+    )
+
+
+# ===========================================================================
+# Input-file discovery
+# ===========================================================================
 
 def load_files_pickles(
     file_path,
@@ -1447,14 +3465,24 @@ def load_files_pickles(
     mass_cut,
     mass_width,
 ):
-    """Load one gridded species pickle."""
+    """
+    Load one halo/CDM/neutrino bulk-field pickle.
+
+    For CDM/neutrinos, prefer the new smoothing-enabled file when present.
+    """
+
+    # ===================================================================
+    # Halo
+    # ===================================================================
 
     if bulk_species == "halo":
+
         halo_dir = halo_directory_name(
             string,
             mass_cut,
             mass_width,
         )
+
         basename = halo_pickle_basename(
             ngrid,
             sim,
@@ -1463,6 +3491,7 @@ def load_files_pickles(
             mass_cut,
             mass_width,
         )
+
         path = os.path.join(
             file_path,
             spec,
@@ -1471,27 +3500,99 @@ def load_files_pickles(
             "output",
             basename,
         )
+
+        if not os.path.exists(
+            path
+        ):
+
+            raise FileNotFoundError(
+                f"Missing halo input pickle:\n{path}"
+            )
+
+        return load(
+            path
+        )
+
+    # ===================================================================
+    # CDM / neutrino
+    # ===================================================================
+
+    directory = os.path.join(
+        file_path,
+        spec,
+        sim,
+        bulk_species,
+        "output",
+    )
+
+    base = (
+        f"data_ngrid_{ngrid}_"
+        f"sim_{sim}_{spec}_{bulk_species}"
+    )
+
+    exact_path = os.path.join(
+        directory,
+        base + ".pickle",
+    )
+
+    smoothed_candidates = sorted(
+        glob.glob(
+            os.path.join(
+                directory,
+                base
+                + "_smooth_R*.pickle",
+            )
+        )
+    )
+
+    # Prefer the smoothing file because it contains both raw and
+    # smoothed primitive fields.
+    if len(
+        smoothed_candidates
+    ) == 1:
+
+        path = smoothed_candidates[0]
+
+    elif len(
+        smoothed_candidates
+    ) > 1:
+
+        raise RuntimeError(
+            "Multiple smoothing-enabled input files found. "
+            "Choose/remove the unwanted smoothing set:\n"
+            + "\n".join(
+                smoothed_candidates
+            )
+        )
+
+    elif os.path.exists(
+        exact_path
+    ):
+
+        path = exact_path
+
     else:
-        basename = (
-            f"data_ngrid_{ngrid}_sim_{sim}_{spec}_"
-            f"{bulk_species}.pickle"
-        )
-        path = os.path.join(
-            file_path,
-            spec,
-            sim,
-            bulk_species,
-            "output",
-            basename,
-        )
 
-    if not os.path.exists(path):
         raise FileNotFoundError(
-            f"Missing input pickle: {path}"
+            "Missing matter input pickle. Tried:\n"
+            f"{exact_path}\n"
+            f"and pattern:\n"
+            f"{base}_smooth_R*.pickle"
         )
 
-    return load(path)
+    print(
+        f"Loading {bulk_species}:\n{path}",
+        flush=True,
+    )
 
+    return load(
+        path
+    )
+
+
+# ===========================================================================
+# Saving
+# ===========================================================================
 
 def save_and_print_usage(
     start_time,
@@ -1501,7 +3602,6 @@ def save_and_print_usage(
     power_data,
     save_path,
 ):
-    """Save one output and print resource use."""
 
     save_dataframe(
         power_data,
@@ -1509,7 +3609,12 @@ def save_and_print_usage(
         ngrid,
         save_path,
     )
-    print(f"{simulation}\n", flush=True)
+
+    print(
+        f"{simulation}\n",
+        flush=True,
+    )
+
     print_usage(
         start_time,
         start_mem,
@@ -1523,18 +3628,31 @@ def save_dataframe(
     ngrid,
     save_path,
 ):
-    """Write one output pickle."""
 
-    os.makedirs(save_path, exist_ok=True)
+    os.makedirs(
+        save_path,
+        exist_ok=True,
+    )
+
     output_file = os.path.join(
         save_path,
         (
-            f"One_sided_response_spectra_ngrid_{ngrid}_"
+            f"Extended_response_spectra_"
+            f"ngrid_{ngrid}_"
             f"sim_{simulation}.pickle"
         ),
     )
 
-    with open(output_file, "wb") as handle:
+    print(
+        f"Saving:\n{output_file}",
+        flush=True,
+    )
+
+    with open(
+        output_file,
+        "wb",
+    ) as handle:
+
         pickle.dump(
             power_data,
             handle,
@@ -1542,15 +3660,38 @@ def save_dataframe(
         )
 
 
-def print_usage(start_time, start_mem, message=""):
-    """Print elapsed time and change in resident memory."""
+# ===========================================================================
+# Resource diagnostics
+# ===========================================================================
 
-    elapsed_time = time.time() - start_time
-    elapsed_mem = (
-        psutil.Process().memory_info().rss - start_mem
+def print_usage(
+    start_time,
+    start_mem,
+    message="",
+):
+
+    elapsed_time = (
+        time.time()
+        - start_time
     )
+
+    current_mem = (
+        psutil.Process()
+        .memory_info()
+        .rss
+    )
+
+    elapsed_mem = (
+        current_mem
+        - start_mem
+    )
+
     print(
-        f"{message} - Time: {elapsed_time:.2f} s, "
-        f"Memory change: {elapsed_mem / 1024**2:.2f} MB",
+        f"{message} - "
+        f"Time: {elapsed_time:.2f} s, "
+        f"Memory change: "
+        f"{elapsed_mem / 1024**2:.2f} MB, "
+        f"Current RSS: "
+        f"{current_mem / 1024**3:.2f} GB",
         flush=True,
     )
