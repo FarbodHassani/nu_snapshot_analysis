@@ -13,7 +13,7 @@ Raw reconstructed fields:
     J_a         = P_a / <n_a>
                 = (1+delta_a)V_a.
 
-Physically smoothed matter fields:
+Physically smoothed species fields:
 
     n_a^(R)   = W_R * n_a,
     P_a,i^(R) = W_R * P_a,i,
@@ -95,7 +95,7 @@ def pairwise_power_spectra_pylians(
     save_species_diagnostics=True,
     compute_convergence_diagnostics=True,
     compute_smoothed_responses=True,
-    compute_all_smoothing_pairs=False,
+    constructed_smoothing_method="spectrum",
     fft_workers=4,
 ):
     """
@@ -103,15 +103,10 @@ def pairwise_power_spectra_pylians(
 
     Parameters
     ----------
-    compute_all_smoothing_pairs : bool
-        If False:
-            compute raw,
-            CDM-smoothed-only,
-            neutrino-smoothed-only,
-            and Rc=Rnu variants.
-
-        If True:
-            additionally compute all available (Rc,Rnu) combinations.
+    compute_smoothed_responses : bool
+    If True, compute same-R smoothed response variants for all
+    available common halo/CDM/neutrino smoothing scales, using both
+    the raw and smoothed halo-density weighting.
 
     fft_workers : int
         Number of scipy.fft workers used for spectral divergences.
@@ -149,7 +144,7 @@ def pairwise_power_spectra_pylians(
         save_species_diagnostics=save_species_diagnostics,
         compute_convergence_diagnostics=compute_convergence_diagnostics,
         compute_smoothed_responses=compute_smoothed_responses,
-        compute_all_smoothing_pairs=compute_all_smoothing_pairs,
+        constructed_smoothing_method=constructed_smoothing_method,
         fft_workers=fft_workers,
     )
 
@@ -193,7 +188,7 @@ def loop_one_sided_spectra_computation(
     save_species_diagnostics,
     compute_convergence_diagnostics,
     compute_smoothed_responses,
-    compute_all_smoothing_pairs,
+    constructed_smoothing_method,
     fft_workers,
 ):
 
@@ -239,8 +234,8 @@ def loop_one_sided_spectra_computation(
             compute_smoothed_responses=(
                 compute_smoothed_responses
             ),
-            compute_all_smoothing_pairs=(
-                compute_all_smoothing_pairs
+            constructed_smoothing_method=(
+                constructed_smoothing_method
             ),
             fft_workers=fft_workers,
         )
@@ -283,7 +278,7 @@ def compute_joint_one_sided_spectra(
     save_species_diagnostics=True,
     compute_convergence_diagnostics=True,
     compute_smoothed_responses=True,
-    compute_all_smoothing_pairs=False,
+    constructed_smoothing_method="spectrum",
     fft_workers=4,
 ):
 
@@ -386,9 +381,6 @@ def compute_joint_one_sided_spectra(
             compute_convergence_diagnostics=(
                 compute_convergence_diagnostics
             ),
-            compute_all_smoothing_pairs=(
-                compute_all_smoothing_pairs
-            ),
         ),
 
         "field_summary": {
@@ -398,6 +390,16 @@ def compute_joint_one_sided_spectra(
         },
 
         "available_velocity_fields": {
+        
+            "halo": {
+                "raw": True,
+                "smoothed": tuple(
+                    sorted_R_keys(
+                        h["smoothed"].keys()
+                    )
+                ),
+            },
+        
             "cdm": {
                 "raw": True,
                 "smoothed": tuple(
@@ -406,7 +408,7 @@ def compute_joint_one_sided_spectra(
                     )
                 ),
             },
-
+        
             "nu": {
                 "raw": True,
                 "smoothed": tuple(
@@ -489,15 +491,11 @@ def compute_joint_one_sided_spectra(
         fft_workers=fft_workers,
     )
 
-    # div_X_raw no longer needed.
-    del div_X_raw
-    gc.collect()
-
     # ===================================================================
     # Smoothed X/Y variants
     #
-    # Keep div_Y_raw until these are complete because neutrino-only
-    # smoothing uses the same raw Y.
+    # All halo, CDM, and neutrino velocities use the same physical R.
+    # We save versions with raw and smoothed halo-density weighting.
     # ===================================================================
 
     if compute_smoothed_responses:
@@ -510,16 +508,20 @@ def compute_joint_one_sided_spectra(
             nu=nu,
             delta_c=c["delta"],
             div_Y_raw=div_Y_raw,
+            div_X_raw=div_X_raw,
             raw_response=response_raw,
             boxsize=boxsize,
             is_lcdm=is_lcdm,
-            fft_workers=fft_workers,
-            compute_all_smoothing_pairs=(
-                compute_all_smoothing_pairs
+            constructed_smoothing_method=(
+                constructed_smoothing_method
             ),
+            fft_workers=fft_workers,
         )
 
+    # Raw divergences are no longer needed after all response variants
+    # have been constructed.
     del div_Y_raw
+    del div_X_raw
     gc.collect()
 
     # ===================================================================
@@ -748,7 +750,104 @@ def build_halo_fields(data):
     fields[
         "primitive_sums"
     ] = primitive_sums
+    
+    
+    # ------------------------------------------------------------------
+    # Smoothed halo primitive fields
+    #
+    # V_h^(R) = P_h^(R) / n_h^(R)
+    # ------------------------------------------------------------------
+    
+    smoothed_input = sub.get(
+        "smoothed",
+        {},
+    )
+    
+    for R_key in sorted_R_keys(
+        smoothed_input.keys()
+    ):
+    
+        smooth_data = smoothed_input[R_key]
+    
+        density_R = np.asarray(
+            smooth_data["density"],
+            dtype=np.float32,
+        )
+    
+        occupied_R = density_R > 0.0
 
+        one_plus_delta_R = (
+            density_R / mean_density
+        ).astype(
+            np.float32
+        )
+        smooth = {
+            "one_plus_delta": one_plus_delta_R,
+        
+            "summary": {
+                "mean_density": float(
+                    np.mean(
+                        density_R,
+                        dtype=np.float64,
+                    )
+                ),
+        
+                "density_sum": float(
+                    np.sum(
+                        density_R,
+                        dtype=np.float64,
+                    )
+                ),
+        
+                "empty_cell_fraction": float(
+                    np.mean(
+                        ~occupied_R
+                    )
+                ),
+            }
+        }    
+
+    
+        for comp in _COMPONENTS:
+    
+            p_R = np.asarray(
+                smooth_data[f"P_{comp}"],
+                dtype=np.float32,
+            )
+    
+            V_R = np.zeros_like(
+                p_R,
+                dtype=np.float32,
+            )
+    
+            np.divide(
+                p_R,
+                density_R,
+                out=V_R,
+                where=occupied_R,
+            )
+    
+            smooth[f"V_{comp}"] = V_R
+    
+            smooth[f"P_sum_{comp}"] = float(
+                np.sum(
+                    p_R,
+                    dtype=np.float64,
+                )
+            )
+    
+        fields["smoothed"][R_key] = smooth
+    
+    
+    fields[
+        "summary"
+    ][
+        "available_smoothing_scales"
+    ] = tuple(
+        fields["smoothed"].keys()
+    )
+    
+    
     return fields
 
 
@@ -1106,33 +1205,97 @@ def get_velocity_source(
 def build_Y_variant(
     h,
     c,
-    c_R=None,
+    R_key=None,
+    smooth_halo_weight=False,
 ):
     """
-    Return
+    Construct the halo-CDM response field.
 
-        Y = J_h - (1+delta_h)V_c
+    Raw:
+        Y = (1+delta_h)(V_h-V_c)
+          = J_h-(1+delta_h)V_c
 
-    using raw or smoothed CDM velocity.
+    Common smoothing scale R:
+        Y_R = W_h (V_h^R-V_c^R)
+
+    where
+
+        W_h = 1+delta_h
+
+    if smooth_halo_weight=False, and
+
+        W_h = 1+delta_h^R
+
+    if smooth_halo_weight=True.
     """
 
-    one_h = h[
-        "one_plus_delta"
-    ]
+    # ---------------------------------------------------------------
+    # Completely raw case
+    # ---------------------------------------------------------------
+
+    if R_key is None:
+
+        one_h = h[
+            "one_plus_delta"
+        ]
+
+        return tuple(
+
+            (
+                h[f"J_{comp}"]
+                - one_h
+                * c[
+                    f"V_{comp}"
+                ]
+            ).astype(
+                np.float32
+            )
+
+            for comp in _COMPONENTS
+        )
+
+    # ---------------------------------------------------------------
+    # Same-R smoothed velocities
+    # ---------------------------------------------------------------
+
+    h_source = get_velocity_source(
+        h,
+        R_key,
+    )
 
     c_source = get_velocity_source(
         c,
-        c_R,
+        R_key,
     )
+
+    if smooth_halo_weight:
+
+        one_h = h[
+            "smoothed"
+        ][
+            R_key
+        ][
+            "one_plus_delta"
+        ]
+
+    else:
+
+        one_h = h[
+            "one_plus_delta"
+        ]
 
     return tuple(
 
         (
-            h[f"J_{comp}"]
-            - one_h
-            * c_source[
-                f"V_{comp}"
-            ]
+            one_h
+            * (
+                h_source[
+                    f"V_{comp}"
+                ]
+                - c_source[
+                    f"V_{comp}"
+                ]
+            )
         ).astype(
             np.float32
         )
@@ -1145,30 +1308,73 @@ def build_X_variant(
     h,
     c,
     nu,
-    c_R=None,
-    nu_R=None,
+    R_key=None,
+    smooth_halo_weight=False,
 ):
     """
-    Return
+    Construct the neutrino-CDM driver field.
 
-        X = (1+delta_h)(V_nu - V_c)
+    Raw:
+        X = (1+delta_h)(V_nu-V_c)
 
-    allowing independent CDM and neutrino smoothing radii.
+    Common smoothing scale R:
+        X_R = W_h (V_nu^R-V_c^R)
+
+    where
+
+        W_h = 1+delta_h
+
+    if smooth_halo_weight=False, and
+
+        W_h = 1+delta_h^R
+
+    if smooth_halo_weight=True.
     """
 
-    one_h = h[
-        "one_plus_delta"
-    ]
+    # ---------------------------------------------------------------
+    # Raw
+    # ---------------------------------------------------------------
 
-    c_source = get_velocity_source(
-        c,
-        c_R,
-    )
+    if R_key is None:
 
-    nu_source = get_velocity_source(
-        nu,
-        nu_R,
-    )
+        one_h = h[
+            "one_plus_delta"
+        ]
+
+        c_source = c
+        nu_source = nu
+
+    # ---------------------------------------------------------------
+    # Same-R smoothing
+    # ---------------------------------------------------------------
+
+    else:
+
+        c_source = get_velocity_source(
+            c,
+            R_key,
+        )
+
+        nu_source = get_velocity_source(
+            nu,
+            R_key,
+        )
+
+        if smooth_halo_weight:
+
+            one_h = h[
+                "smoothed"
+            ][
+                R_key
+            ][
+                "one_plus_delta"
+            ]
+
+        else:
+
+            one_h = h[
+                "one_plus_delta"
+            ]
 
     return tuple(
 
@@ -1188,7 +1394,6 @@ def build_X_variant(
 
         for comp in _COMPONENTS
     )
-
 
 def build_halo_weighted_velocity(
     h,
@@ -1510,80 +1715,120 @@ def compute_response_decomposition_spectra(
 # ===========================================================================
 # Smoothed response variants
 # ===========================================================================
-
 def compute_response_variants(
     h,
     c,
     nu,
     delta_c,
     div_Y_raw,
+    div_X_raw,
     raw_response,
     boxsize,
     is_lcdm,
+    constructed_smoothing_method="spectrum",
     fft_workers=1,
-    compute_all_smoothing_pairs=False,
 ):
     """
-    Compute response-estimator variants.
+    Compute only the response variants used in the final analysis.
 
-    Variants:
+    Variants
+    --------
 
-      raw:
-          X(Vnu,Vc), Y(Vc)
+    raw:
+        No smoothing anywhere.
 
-      cdm_smoothed_only:
-          X(Vnu,Vc^Rc), Y(Vc^Rc)
+        X = (1+delta_h)(V_nu-V_c)
+        Y = (1+delta_h)(V_h-V_c)
 
-      nu_smoothed_only:
-          X(Vnu^Rnu,Vc), Y(Vc)
+    same_R_raw_halo_weight:
+        Halo, CDM and neutrino velocities are all smoothed
+        using the same physical radius R, while the external
+        halo-density weighting remains unsmoothed.
 
-      both_same_R:
-          X(Vnu^R,Vc^R), Y(Vc^R)
+        X_R = (1+delta_h)(V_nu^R-V_c^R)
+        Y_R = (1+delta_h)(V_h^R-V_c^R)
 
-      all_pairs (optional):
-          X(Vnu^Rnu,Vc^Rc), Y(Vc^Rc)
+    same_R_smoothed_halo_weight:
+        Halo, CDM and neutrino velocities are all smoothed
+        using the same R, and the halo-density weighting is
+        also smoothed with the same R.
+
+        X_R = (1+delta_h^R)(V_nu^R-V_c^R)
+        Y_R = (1+delta_h^R)(V_h^R-V_c^R)
+        
+    constructed_field_smoothed:
+        First construct the complete raw halo-weighted response fields,
+
+            X = (1+delta_h)(V_nu-V_c)
+            Y = (1+delta_h)(V_h-V_c),
+
+        and only then Gaussian smooth the complete fields:
+
+            X_R = W_R * X
+            Y_R = W_R * Y.
+
+        Since differentiation commutes with convolution, the
+        implementation applies W_R directly to the previously computed
+        raw divergence fields:
+
+            div(X_R) = W_R * div(X)
+            div(Y_R) = W_R * div(Y).
     """
 
+    if constructed_smoothing_method not in {
+        "spectrum",
+        "field",
+    }:
+        raise ValueError(
+            "constructed_smoothing_method must be "
+            "'spectrum' or 'field'; got "
+            f"{constructed_smoothing_method!r}"
+        )
+
     out = {
+
         "raw": raw_response,
 
-        "cdm_smoothed_only": {},
+        "same_R_raw_halo_weight": {},
 
-        "nu_smoothed_only": {},
+        "same_R_smoothed_halo_weight": {},
 
-        "both_same_R": {},
-
-        "all_pairs": {},
+        "constructed_field_smoothed": {},
 
         "definitions": {
+
             "raw": (
                 "X=(1+delta_h)(V_nu-V_c), "
-                "Y=J_h-(1+delta_h)V_c"
+                "Y=(1+delta_h)(V_h-V_c)"
             ),
 
-            "cdm_smoothed_only": (
-                "X=(1+delta_h)(V_nu-V_c^Rc), "
-                "Y=J_h-(1+delta_h)V_c^Rc"
-            ),
-
-            "nu_smoothed_only": (
-                "X=(1+delta_h)(V_nu^Rnu-V_c), "
-                "Y=J_h-(1+delta_h)V_c"
-            ),
-
-            "both_same_R": (
+            "same_R_raw_halo_weight": (
                 "X=(1+delta_h)(V_nu^R-V_c^R), "
-                "Y=J_h-(1+delta_h)V_c^R"
+                "Y=(1+delta_h)(V_h^R-V_c^R)"
             ),
 
-            "all_pairs": (
-                "X=(1+delta_h)(V_nu^Rnu-V_c^Rc), "
-                "Y=J_h-(1+delta_h)V_c^Rc"
+            "same_R_smoothed_halo_weight": (
+                "X=(1+delta_h^R)(V_nu^R-V_c^R), "
+                "Y=(1+delta_h^R)(V_h^R-V_c^R)"
+            ),
+            "constructed_field_smoothed": (
+                "X_R=W_R*[(1+delta_h)(V_nu-V_c)], "
+                "Y_R=W_R*[(1+delta_h)(V_h-V_c)]"
             ),
         },
     }
 
-    c_scales = sorted_R_keys(
+    # ------------------------------------------------------------------
+    # Only use smoothing radii available for all relevant species.
+    # ------------------------------------------------------------------
+
+    h_scales = set(
+        h[
+            "smoothed"
+        ].keys()
+    )
+
+    c_scales = set(
         c[
             "smoothed"
         ].keys()
@@ -1591,104 +1836,75 @@ def compute_response_variants(
 
     if is_lcdm:
 
-        # V_nu=0 for every smoothing scale.
-        nu_scales = []
+        # Synthetic neutrino velocity is zero at every R.
+        common_scales = sorted_R_keys(
+            h_scales
+            & c_scales
+        )
 
     else:
 
-        nu_scales = sorted_R_keys(
+        nu_scales = set(
             nu[
                 "smoothed"
             ].keys()
         )
 
+        common_scales = sorted_R_keys(
+            h_scales
+            & c_scales
+            & nu_scales
+        )
+
     # ===================================================================
-    # Neutrino-only smoothing
-    #
-    # Y is raw, so reuse div_Y_raw.
+    # Same physical smoothing radius for all species
     # ===================================================================
 
-    for Rnu in nu_scales:
+    for R_key in common_scales:
 
-        X_nuR = build_X_variant(
+        # ---------------------------------------------------------------
+        # Version 1:
+        # smoothed velocities, raw halo-density weighting
+        # ---------------------------------------------------------------
+
+        Y_R_raw_weight = build_Y_variant(
+            h,
+            c,
+            R_key=R_key,
+            smooth_halo_weight=False,
+        )
+
+        X_R_raw_weight = build_X_variant(
             h,
             c,
             nu,
-            nu_R=Rnu,
+            R_key=R_key,
+            smooth_halo_weight=False,
         )
 
-        div_X_nuR = fft_divergence(
-            X_nuR,
+        div_Y_R_raw_weight = fft_divergence(
+            Y_R_raw_weight,
             boxsize,
             workers=fft_workers,
         )
 
-        del X_nuR
+        div_X_R_raw_weight = fft_divergence(
+            X_R_raw_weight,
+            boxsize,
+            workers=fft_workers,
+        )
+
+        del Y_R_raw_weight
+        del X_R_raw_weight
 
         out[
-            "nu_smoothed_only"
+            "same_R_raw_halo_weight"
         ][
-            Rnu
+            R_key
         ] = compute_one_sided_response_spectra(
             delta_c=delta_c,
-            div_Y=div_Y_raw,
-            div_X=div_X_nuR,
-            boxsize=boxsize,
-            physical_neutrino_driver_available=True,
-            lcdm_zero_neutrino_convention=False,
-        )
-
-        del div_X_nuR
-
-    # ===================================================================
-    # CDM smoothing
-    #
-    # Process one Rc at a time so only one divY_R is kept in memory.
-    # ===================================================================
-
-    for Rc in c_scales:
-
-        Y_cR = build_Y_variant(
-            h,
-            c,
-            c_R=Rc,
-        )
-
-        div_Y_cR = fft_divergence(
-            Y_cR,
-            boxsize,
-            workers=fft_workers,
-        )
-
-        del Y_cR
-
-        # ---------------------------------------------------------------
-        # CDM-smoothed-only
-        # ---------------------------------------------------------------
-
-        X_cR = build_X_variant(
-            h,
-            c,
-            nu,
-            c_R=Rc,
-        )
-
-        div_X_cR = fft_divergence(
-            X_cR,
-            boxsize,
-            workers=fft_workers,
-        )
-
-        del X_cR
-
-        out[
-            "cdm_smoothed_only"
-        ][
-            Rc
-        ] = compute_one_sided_response_spectra(
-            delta_c=delta_c,
-            div_Y=div_Y_cR,
-            div_X=div_X_cR,
+            div_Y=div_Y_R_raw_weight,
+            div_X=div_X_R_raw_weight,
             boxsize=boxsize,
             physical_neutrino_driver_available=(
                 not is_lcdm
@@ -1698,138 +1914,391 @@ def compute_response_variants(
             ),
         )
 
-        del div_X_cR
+        del div_Y_R_raw_weight
+        del div_X_R_raw_weight
 
         # ---------------------------------------------------------------
-        # LCDM: zero neutrino means same-R is identical to CDM-only.
+        # Version 2:
+        # smoothed velocities AND smoothed halo-density weighting
         # ---------------------------------------------------------------
 
-        if is_lcdm:
+        Y_R_smooth_weight = build_Y_variant(
+            h,
+            c,
+            R_key=R_key,
+            smooth_halo_weight=True,
+        )
+
+        X_R_smooth_weight = build_X_variant(
+            h,
+            c,
+            nu,
+            R_key=R_key,
+            smooth_halo_weight=True,
+        )
+
+        div_Y_R_smooth_weight = fft_divergence(
+            Y_R_smooth_weight,
+            boxsize,
+            workers=fft_workers,
+        )
+
+        div_X_R_smooth_weight = fft_divergence(
+            X_R_smooth_weight,
+            boxsize,
+            workers=fft_workers,
+        )
+
+        del Y_R_smooth_weight
+        del X_R_smooth_weight
+
+        out[
+            "same_R_smoothed_halo_weight"
+        ][
+            R_key
+        ] = compute_one_sided_response_spectra(
+            delta_c=delta_c,
+            div_Y=div_Y_R_smooth_weight,
+            div_X=div_X_R_smooth_weight,
+            boxsize=boxsize,
+            physical_neutrino_driver_available=(
+                not is_lcdm
+            ),
+            lcdm_zero_neutrino_convention=(
+                is_lcdm
+            ),
+        )
+
+        del div_Y_R_smooth_weight
+        del div_X_R_smooth_weight
+
+        # ---------------------------------------------------------------
+        # Version 3:
+        # Gaussian smoothing of the FULLY CONSTRUCTED X/Y fields.
+        #
+        #     X_R = W_R * [(1+delta_h)(V_nu-V_c)]
+        #     Y_R = W_R * [(1+delta_h)(V_h-V_c)]
+        #
+        # Two implementations are available:
+        #
+        #   spectrum : fast production path. Apply the Gaussian window
+        #              directly to the already measured raw spectra.
+        #
+        #   field    : exact mode-level validation path. Smooth the
+        #              already computed raw divergence fields and then
+        #              recompute the spectra.
+        # ---------------------------------------------------------------
+
+        R = float(
+            str(R_key).replace(
+                "R_",
+                "",
+            )
+        )
+
+        if constructed_smoothing_method == "spectrum":
 
             out[
-                "both_same_R"
+                "constructed_field_smoothed"
             ][
-                Rc
-            ] = out[
-                "cdm_smoothed_only"
-            ][
-                Rc
-            ]
-
-        # ---------------------------------------------------------------
-        # Massive-neutrino same-R
-        # ---------------------------------------------------------------
-
-        elif Rc in nu[
-            "smoothed"
-        ]:
-
-            X_both = build_X_variant(
-                h,
-                c,
-                nu,
-                c_R=Rc,
-                nu_R=Rc,
+                R_key
+            ] = constructed_smoothed_response_from_raw_spectra(
+                raw_response=raw_response,
+                R=R,
             )
 
-            div_X_both = fft_divergence(
-                X_both,
+        elif constructed_smoothing_method == "field":
+
+            div_Y_constructed_R = gaussian_smooth_scalar(
+                div_Y_raw,
                 boxsize,
+                R,
                 workers=fft_workers,
             )
 
-            del X_both
-
-            out[
-                "both_same_R"
-            ][
-                Rc
-            ] = (
-                compute_one_sided_response_spectra(
-                    delta_c=delta_c,
-                    div_Y=div_Y_cR,
-                    div_X=div_X_both,
-                    boxsize=boxsize,
-                    physical_neutrino_driver_available=True,
-                    lcdm_zero_neutrino_convention=False,
-                )
+            div_X_constructed_R = gaussian_smooth_scalar(
+                div_X_raw,
+                boxsize,
+                R,
+                workers=fft_workers,
             )
 
-            del div_X_both
-
-        # ---------------------------------------------------------------
-        # Arbitrary Rc,Rnu pairs
-        # ---------------------------------------------------------------
-
-        if (
-            compute_all_smoothing_pairs
-            and not is_lcdm
-        ):
+            out[
+                "constructed_field_smoothed"
+            ][
+                R_key
+            ] = compute_one_sided_response_spectra(
+                delta_c=delta_c,
+                div_Y=div_Y_constructed_R,
+                div_X=div_X_constructed_R,
+                boxsize=boxsize,
+                physical_neutrino_driver_available=(
+                    not is_lcdm
+                ),
+                lcdm_zero_neutrino_convention=(
+                    is_lcdm
+                ),
+            )
 
             out[
-                "all_pairs"
+                "constructed_field_smoothed"
             ][
-                Rc
-            ] = {}
+                R_key
+            ][
+                "constructed_smoothing"
+            ] = {
+                "R_Mpc_over_h": R,
+                "window": (
+                    "Gaussian W_R(k)=exp[-(kR)^2/2]"
+                ),
+                "implementation": (
+                    "exact_mode_level_field_smoothing"
+                ),
+            }
 
-            for Rnu in nu_scales:
+            del div_Y_constructed_R
+            del div_X_constructed_R
 
-                # Same-R case was already computed above.
-                if Rnu == Rc:
-
-                    out[
-                        "all_pairs"
-                    ][
-                        Rc
-                    ][
-                        Rnu
-                    ] = out[
-                        "both_same_R"
-                    ][
-                        Rc
-                    ]
-
-                    continue
-
-                X_pair = build_X_variant(
-                    h,
-                    c,
-                    nu,
-                    c_R=Rc,
-                    nu_R=Rnu,
-                )
-
-                div_X_pair = fft_divergence(
-                    X_pair,
-                    boxsize,
-                    workers=fft_workers,
-                )
-
-                del X_pair
-
-                out[
-                    "all_pairs"
-                ][
-                    Rc
-                ][
-                    Rnu
-                ] = (
-                    compute_one_sided_response_spectra(
-                        delta_c=delta_c,
-                        div_Y=div_Y_cR,
-                        div_X=div_X_pair,
-                        boxsize=boxsize,
-                        physical_neutrino_driver_available=True,
-                        lcdm_zero_neutrino_convention=False,
-                    )
-                )
-
-                del div_X_pair
-
-        del div_Y_cR
         gc.collect()
 
+    
+    gc.collect()
     return out
+
+
+
+def constructed_smoothed_response_from_raw_spectra(
+    raw_response,
+    R,
+):
+    """
+    Construct spectra for
+
+        X_R = W_R * X
+        Y_R = W_R * Y
+
+    directly from the already measured raw spectra, using
+
+        W_R(k) = exp[-(k R)^2 / 2].
+
+    This avoids any additional 3-D FFTs or real-space fields.
+
+    The raw spectra are already shell-binned by Pylians, so the
+    Gaussian window is evaluated at the reported bin-center k.
+    """
+
+    k = np.asarray(
+        raw_response[
+            "k_h_per_Mpc"
+        ],
+        dtype=np.float64,
+    )
+
+    R = float(R)
+
+    W = np.exp(
+        -0.5 * (k * R) ** 2
+    )
+
+    W2 = W * W
+
+    return {
+        "beta_estimator_available": (
+            raw_response[
+                "beta_estimator_available"
+            ]
+        ),
+
+        "physical_neutrino_driver_available": (
+            raw_response[
+                "physical_neutrino_driver_available"
+            ]
+        ),
+
+        "lcdm_zero_neutrino_convention": (
+            raw_response[
+                "lcdm_zero_neutrino_convention"
+            ]
+        ),
+
+        "k_h_per_Mpc": np.asarray(
+            raw_response[
+                "k_h_per_Mpc"
+            ]
+        ),
+
+        "P_delta_c_delta_c": np.asarray(
+            raw_response[
+                "P_delta_c_delta_c"
+            ]
+        ),
+
+        "P_delta_c_divY": (
+            W
+            * np.asarray(
+                raw_response[
+                    "P_delta_c_divY"
+                ]
+            )
+        ),
+
+        "P_delta_c_divX": (
+            W
+            * np.asarray(
+                raw_response[
+                    "P_delta_c_divX"
+                ]
+            )
+        ),
+
+        "P_divY_divY": (
+            W2
+            * np.asarray(
+                raw_response[
+                    "P_divY_divY"
+                ]
+            )
+        ),
+
+        "P_divX_divX": (
+            W2
+            * np.asarray(
+                raw_response[
+                    "P_divX_divX"
+                ]
+            )
+        ),
+
+        "P_divY_divX": (
+            W2
+            * np.asarray(
+                raw_response[
+                    "P_divY_divX"
+                ]
+            )
+        ),
+
+        "Nmodes": np.asarray(
+            raw_response[
+                "Nmodes"
+            ]
+        ),
+
+        "postprocessing_estimator": (
+            raw_response[
+                "postprocessing_estimator"
+            ]
+        ),
+
+        "normalization_note": (
+            raw_response[
+                "normalization_note"
+            ]
+        ),
+
+        "mas_note": (
+            raw_response[
+                "mas_note"
+            ]
+        ),
+
+        "constructed_smoothing": {
+            "R_Mpc_over_h": R,
+            "window": (
+                "Gaussian W_R(k)=exp[-(kR)^2/2]"
+            ),
+            "implementation": (
+                "spectrum_level_bin_center"
+            ),
+            "binning_note": (
+                "W_R is evaluated at the Pylians shell-bin k. "
+                "This approximates mode-by-mode Gaussian smoothing "
+                "when the window varies negligibly across each bin."
+            ),
+        },
+    }
+
+
+def gaussian_smooth_scalar(
+    field,
+    boxsize,
+    R,
+    workers=1,
+):
+    """
+    Gaussian smooth an already constructed scalar field:
+
+        field_R = W_R * field
+
+    with
+
+        W_R(k) = exp[-(k R)^2 / 2].
+    """
+
+    field = np.asarray(
+        field,
+        dtype=np.float32,
+    )
+
+    nx, ny, nz = field.shape
+
+    dx = float(boxsize) / nx
+    dy = float(boxsize) / ny
+    dz = float(boxsize) / nz
+
+    kx = (
+        2.0 * np.pi
+        * sfft.fftfreq(nx, d=dx)
+    ).astype(np.float32)
+
+    ky = (
+        2.0 * np.pi
+        * sfft.fftfreq(ny, d=dy)
+    ).astype(np.float32)
+
+    kz = (
+        2.0 * np.pi
+        * sfft.rfftfreq(nz, d=dz)
+    ).astype(np.float32)
+
+    field_k = sfft.rfftn(
+        field,
+        workers=workers,
+    )
+
+    R = np.float32(R)
+
+    k2 = (
+        kx[:, None, None]**2
+        + ky[None, :, None]**2
+        + kz[None, None, :]**2
+    )
+
+    W_R = np.exp(
+        -0.5 * R**2 * k2
+    ).astype(
+        np.float32,
+        copy=False,
+    )
+
+    del k2
+
+    field_k *= W_R
+
+    del W_R
+
+    field_R = sfft.irfftn(
+        field_k,
+        s=field.shape,
+        workers=workers,
+    ).astype(
+        np.float32,
+        copy=False,
+    )
+
+    del field_k
+
+    return field_R
 
 
 # ===========================================================================
@@ -1908,10 +2377,11 @@ def compute_convergence_tests(
             ],
         },
 
-        "smoothed_zero_modes": {
-            "cdm": {},
-            "nu": {},
-        },
+"smoothed_zero_modes": {
+    "halo": {},
+    "cdm": {},
+    "nu": {},
+},
 
         "halo_occupancy": h[
             "summary"
@@ -1984,10 +2454,10 @@ def compute_convergence_tests(
     # ===================================================================
 
     for species_name, species in (
+        ("halo", h),
         ("cdm", c),
         ("nu", nu),
     ):
-
         raw_sums = species[
             "primitive_sums"
         ]
@@ -2848,6 +3318,7 @@ def fft_divergence(
     return div
 
 
+
 # ===========================================================================
 # Scalar spectra
 # ===========================================================================
@@ -3178,7 +3649,6 @@ def build_metadata(
     save_species_diagnostics,
     compute_smoothed_responses,
     compute_convergence_diagnostics,
-    compute_all_smoothing_pairs,
 ):
 
     return {
@@ -3236,10 +3706,6 @@ def build_metadata(
 
         "convergence_diagnostics_saved": bool(
             compute_convergence_diagnostics
-        ),
-
-        "all_Rc_Rnu_pairs_saved": bool(
-            compute_all_smoothing_pairs
         ),
 
         "primitive_fields": {
@@ -3478,37 +3944,80 @@ def load_files_pickles(
     if bulk_species == "halo":
 
         halo_dir = halo_directory_name(
-            string,
-            mass_cut,
-            mass_width,
+            string=string,
+            mass_cut=mass_cut,
+            mass_width=mass_width,
         )
-
+        
         basename = halo_pickle_basename(
-            ngrid,
-            sim,
-            spec,
-            string,
-            mass_cut,
-            mass_width,
+            ngrid=ngrid,
+            sim=sim,
+            spec=spec,
+            string=string,
+            mass_cut=mass_cut,
+            mass_width=mass_width,
         )
-
-        path = os.path.join(
+        directory = os.path.join(
             file_path,
             spec,
             sim,
             halo_dir,
             "output",
+        )
+        
+        exact_path = os.path.join(
+            directory,
             basename,
         )
-
-        if not os.path.exists(
-            path
-        ):
-
-            raise FileNotFoundError(
-                f"Missing halo input pickle:\n{path}"
+        
+        base_no_ext = os.path.splitext(
+            basename
+        )[0]
+        
+        smoothed_candidates = sorted(
+            glob.glob(
+                os.path.join(
+                    directory,
+                    base_no_ext
+                    + "_smooth_R*.pickle",
+                )
             )
-
+        )
+        
+        # Prefer the smoothing-enabled halo file because it contains
+        # both the raw and smoothed primitive fields.
+        if len(smoothed_candidates) == 1:
+        
+            path = smoothed_candidates[0]
+        
+        elif len(smoothed_candidates) > 1:
+        
+            raise RuntimeError(
+                "Multiple smoothing-enabled halo files found:\n"
+                + "\n".join(
+                    smoothed_candidates
+                )
+            )
+        
+        elif os.path.exists(
+            exact_path
+        ):
+        
+            path = exact_path
+        
+        else:
+        
+            raise FileNotFoundError(
+                "Missing halo input pickle. Tried:\n"
+                f"{exact_path}\n"
+                "and smoothing-enabled variants."
+            )
+        
+        print(
+            f"Loading halo:\n{path}",
+            flush=True,
+        )
+        
         return load(
             path
         )

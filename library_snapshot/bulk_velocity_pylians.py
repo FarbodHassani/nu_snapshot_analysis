@@ -64,7 +64,7 @@ def bulk_calculation_pylians(
     Construct CIC density and first velocity-moment fields for CDM,
     neutrinos, or halos.
 
-    For CDM/neutrinos, optional Gaussian-smoothed primitive fields can also
+    For CDM/neutrinos and halos, optional Gaussian-smoothed primitive fields can also
     be constructed:
 
         n^(R)   = W_R * n
@@ -121,7 +121,7 @@ def bulk_calculation_pylians(
 
     smoothing_scales : iterable of float or None
         Gaussian smoothing scales R in Mpc/h.
-        Smoothing is available only for CDM/neutrino fields.
+        Smoothing is available only for CDM/neutrino and halo fields.
 
     fft_workers : int
         Number of threads used by scipy.fft.
@@ -162,12 +162,6 @@ def bulk_calculation_pylians(
     if ngrid_max <= ngrid_min:
         raise ValueError(
             "ngrid_max must be larger than ngrid_min."
-        )
-
-    if bulk_species == "halo" and len(smoothing_scales) > 0:
-        raise ValueError(
-            "Physical smoothing is currently defined only for "
-            "CDM/neutrino primitive moment fields, not halos."
         )
 
     boxsize = np.float64(boxsize)
@@ -471,15 +465,19 @@ def loop_ngrid_list(
                     mass_width,
                     save_path,
                     halo_cache["counts"],
+                    smoothing_scales=smoothing_scales,
                 )
 
                 process_halo_arrays(
+                    rank,
                     halo_cache["pos"],
                     halo_cache["vel"],
                     halo_cache["masses"],
                     ngrid,
                     boxsize,
                     sub_box_data,
+                    smoothing_scales=smoothing_scales,
+                    fft_workers=fft_workers,
                 )
 
             else:
@@ -540,15 +538,19 @@ def loop_ngrid_list(
                     mass_width,
                     save_path,
                     halo_cache["counts"],
+                    smoothing_scales=smoothing_scales,
                 )
 
                 process_halo_arrays(
+                    rank,
                     halo_cache["pos"],
                     halo_cache["vel"],
                     halo_cache["masses"],
                     ngrid,
                     boxsize,
                     sub_box_data,
+                    smoothing_scales=smoothing_scales,
+                    fft_workers=fft_workers,
                 )
 
             else:
@@ -1292,6 +1294,7 @@ def compute_metadata_from_halo_counts(
     mass_width,
     save_path,
     counts,
+    smoothing_scales=(),
 ):
 
     dx = float(boxsize) / int(ngrid)
@@ -1312,6 +1315,15 @@ def compute_metadata_from_halo_counts(
         'ngrid': int(ngrid),
 
         'grid_spacing_Mpc_h': dx,
+        'smoothing_scales_Mpc_h': list(
+                    smoothing_scales
+                ),
+        
+        'smoothed_velocity_definition': (
+                    'V_h,i^(R)=P_h,i^(R)/density_h^(R). '
+                    'Halo density and first velocity moments are '
+                    'smoothed separately.'
+                ),
 
         'ngrid_min': int(ngrid_min),
         'ngrid_max': int(ngrid_max),
@@ -1410,12 +1422,15 @@ def compute_metadata_from_halo_counts(
 # ===========================================================================
 
 def process_halo_arrays(
+    rank,
     pos,
     vel,
     masses,
     ngrid,
     boxsize,
     sub_box_data,
+    smoothing_scales=(),
+    fft_workers=20,
 ):
 
     if masses.size == 0:
@@ -1618,7 +1633,27 @@ def process_halo_arrays(
     sub_box_data['P_x'] = Vx
     sub_box_data['P_y'] = Vy
     sub_box_data['P_z'] = Vz
-
+    
+    # --------------------------------------------------------------
+    # Physical smoothing AFTER halo fields have been accumulated.
+    # --------------------------------------------------------------
+    
+    if len(smoothing_scales) > 0:
+    
+        if rank == 0:
+            print(
+                "\nConstructing physically smoothed halo density "
+                "and first-moment fields for "
+                f"R={smoothing_scales} Mpc/h.",
+                flush=True,
+            )
+    
+        add_smoothed_primitive_fields(
+            sub_box_data,
+            boxsize,
+            smoothing_scales,
+            fft_workers=fft_workers,
+        )
 
 # ===========================================================================
 # Gadget CDM/neutrino processing
